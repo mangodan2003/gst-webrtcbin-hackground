@@ -443,66 +443,49 @@ webrtcbin_get_stats (GstElement * webrtcbin)
 static gboolean
 start_pipeline (gboolean create_offer, guint opus_pt, guint vp8_pt)
 {
-  char *pipeline;
+//  char *pipeline;
   GstStateChangeReturn ret;
-  GError *error = NULL;
 
-  pipeline =
-      g_strdup_printf ("webrtcbin bundle-policy=max-bundle name=sendrecv "
-      STUN_SERVER
-      "videotestsrc is-live=true pattern=ball ! videoconvert ! queue ! "
-      /* increase the default keyframe distance, browsers have really long
-       * periods between keyframes and rely on PLI events on packet loss to
-       * fix corrupted video.
-       */
-      "vp8enc deadline=1 keyframe-max-dist=2000 ! "
-      /* picture-id-mode=15-bit seems to make TWCC stats behave better, and
-       * fixes stuttery video playback in Chrome */
-      "rtpvp8pay name=videopay picture-id-mode=15-bit ! "
-      "queue ! %s,payload=%u ! sendrecv. "
-      "audiotestsrc is-live=true wave=red-noise ! audioconvert ! audioresample ! queue ! opusenc ! rtpopuspay name=audiopay ! "
-      "queue ! %s,payload=%u ! sendrecv. ", RTP_CAPS_VP8, vp8_pt,
-      RTP_CAPS_OPUS, opus_pt);
+  //  replaced gst_parse_launch with manual pipeline and webrtcbin
+  // as don't want audio and video by default,
 
-  pipe1 = gst_parse_launch (pipeline, &error);
-  g_free (pipeline);
-  if (error) {
-    gst_printerr ("Failed to parse launch: %s\n", error->message);
-    g_error_free (error);
-    goto err;
-  }
-
-  webrtc1 = gst_bin_get_by_name (GST_BIN (pipe1), "sendrecv");
+  pipe1 = gst_pipeline_new("pipeline");
+  g_assert_nonnull (pipe1);
+  webrtc1 = gst_element_factory_make("webrtcbin", NULL);
   g_assert_nonnull (webrtc1);
 
-  if (!create_offer) {
-    /* XXX: this will fail when the remote offers twcc as the extension id
-     * cannot currently be negotiated when receiving an offer.
-     */
-    GST_FIXME ("Need to implement header extension negotiation when "
-        "reciving a remote offers");
-  } else {
-    GstElement *videopay, *audiopay;
-    GstRTPHeaderExtension *video_twcc, *audio_twcc;
+  g_object_set(webrtc1, "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, NULL);
+  g_object_set(webrtc1, "stun-server", STUN_SERVER, NULL, "name", "sendrecv", NULL);
 
-    videopay = gst_bin_get_by_name (GST_BIN (pipe1), "videopay");
-    g_assert_nonnull (videopay);
-    video_twcc = gst_rtp_header_extension_create_from_uri (RTP_TWCC_URI);
-    g_assert_nonnull (video_twcc);
-    gst_rtp_header_extension_set_id (video_twcc, 1);
-    g_signal_emit_by_name (videopay, "add-extension", video_twcc);
-    g_clear_object (&video_twcc);
-    g_clear_object (&videopay);
-
-    audiopay = gst_bin_get_by_name (GST_BIN (pipe1), "audiopay");
-    g_assert_nonnull (audiopay);
-    audio_twcc = gst_rtp_header_extension_create_from_uri (RTP_TWCC_URI);
-    g_assert_nonnull (audio_twcc);
-    gst_rtp_header_extension_set_id (audio_twcc, 1);
-    g_signal_emit_by_name (audiopay, "add-extension", audio_twcc);
-    g_clear_object (&audio_twcc);
-    g_clear_object (&audiopay);
-  }
+  gst_bin_add(GST_BIN(pipe1), webrtc1);
+//  if (!create_offer) {
+//    /* XXX: this will fail when the remote offers twcc as the extension id
+//     * cannot currently be negotiated when receiving an offer.
+//     */
+//    GST_FIXME ("Need to implement header extension negotiation when "
+//        "reciving a remote offers");
+//  } else {
+//    GstElement *videopay, *audiopay;
+//    GstRTPHeaderExtension *video_twcc, *audio_twcc;
+//
+//    videopay = gst_bin_get_by_name (GST_BIN (pipe1), "videopay");
+//    g_assert_nonnull (videopay);
+//    video_twcc = gst_rtp_header_extension_create_from_uri (RTP_TWCC_URI);
+//    g_assert_nonnull (video_twcc);
+//    gst_rtp_header_extension_set_id (video_twcc, 1);
+//    g_signal_emit_by_name (videopay, "add-extension", video_twcc);
+//    g_clear_object (&video_twcc);
+//    g_clear_object (&videopay);
+//
+//    audiopay = gst_bin_get_by_name (GST_BIN (pipe1), "audiopay");
+//    g_assert_nonnull (audiopay);
+//    audio_twcc = gst_rtp_header_extension_create_from_uri (RTP_TWCC_URI);
+//    g_assert_nonnull (audio_twcc);
+//    gst_rtp_header_extension_set_id (audio_twcc, 1);
+//    g_signal_emit_by_name (audiopay, "add-extension", audio_twcc);
+//    g_clear_object (&audio_twcc);
+//    g_clear_object (&audiopay);
+//  }
 
   /* This is the gstwebrtc entry point where we create the offer and so on. It
    * will be called when the pipeline goes to PLAYING. */
