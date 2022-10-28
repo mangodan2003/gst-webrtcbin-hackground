@@ -307,14 +307,28 @@ data_channel_on_error (GObject * dc, gpointer user_data)
   cleanup_and_quit_loop ("Data channel error", 0);
 }
 
-static void
-data_channel_on_open (GObject * dc, gpointer user_data)
-{
+
+static gboolean data_channel_send_hello(GObject * dc) {
   GBytes *bytes = g_bytes_new ("data", strlen ("data"));
-  gst_print ("data channel opened\n");
+  gst_print ("Sending hello to browser\n");
   g_signal_emit_by_name (dc, "send-string", "Hi! from GStreamer");
   g_signal_emit_by_name (dc, "send-data", bytes);
   g_bytes_unref (bytes);
+  return G_SOURCE_CONTINUE;
+}
+
+
+/*
+ * Changed this so that is regularly sends a message such that it is obvious when
+ * pipeline has stalled.
+ *
+ * QUESTION: Why is this called twice?
+ */
+static void
+data_channel_on_open (GObject * dc, gpointer user_data)
+{
+  gst_print ("data channel opened\n");
+  g_timeout_add (200, (GSourceFunc) data_channel_send_hello, dc);
 }
 
 static void
@@ -346,6 +360,7 @@ static void
 on_data_channel (GstElement * webrtc, GObject * data_channel,
     gpointer user_data)
 {
+  gst_print ("on_data_channel\n");
   connect_data_channel_signals (data_channel);
   receive_channel = data_channel;
 }
