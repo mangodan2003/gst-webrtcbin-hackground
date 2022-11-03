@@ -1,10 +1,9 @@
 /* vim: set sts=4 sw=4 et :
  *
  * Demo Javascript app for negotiating and streaming a sendrecv webrtc stream
- * with a GStreamer app. Runs only in passive mode, i.e., responds to offers
- * with answers, exchanges ICE candidates, and streams.
- *
- * Author: Nirbheek Chauhan <nirbheek@centricular.com>
+ * with a GStreamer app.
+ * 
+ * Author: Dan Squires <mangodan2003@gmail.com>, Nirbheek Chauhan <nirbheek@centricular.com>
  */
 
 // Set this to override the automatic detection in websocketServerConnect()
@@ -22,6 +21,7 @@ var connect_attempts = 0;
 var peer_connection;
 let makingOffer = false, ignoreOffer = false;
 let polite = true;
+let pong = 0;
 var send_channel;
 var ws_conn;
 // Promise for local stream after constraints are approved by the user
@@ -248,20 +248,23 @@ function onServerMessage(event) {
         case "HELLO":
             setStatus("Registered with server, waiting for call");
             return;
+
         case "SESSION_OK":
             setStatus("Starting negotiation");
-            if (wantRemoteOfferer()) {
-                ws_conn.send("OFFER_REQUEST");
-                setStatus("Sent OFFER_REQUEST, waiting for offer");
-                return;
-            }
-            if (!peer_connection)
-                createCall(null).then (generateOffer);
+            ws_conn.send("OFFER_REQUEST");
+            setStatus("Sent OFFER_REQUEST, waiting for offer");
             return;
+
+            if (!peer_connection)
+                createCall(null);
+
+            return;
+
         case "OFFER_REQUEST":
             // The peer wants us to set up and then send an offer
             if (!peer_connection)
-                createCall(null).then (generateOffer);
+                createCall(null);
+            //generateOffer();
             return;
         default:
             if (event.data.startsWith("ERROR")) {
@@ -365,7 +368,7 @@ function onRemoteTrack(event) {
     if (getVideoElement().srcObject !== stream) {
         console.log('Incoming stream');
         getVideoElement().srcObject = stream;
-        
+
         stream.onremovetrack = ({track}) => {
           console.log(`${track.kind} track was removed.`);
           if (!stream.getTracks().length) {
@@ -390,7 +393,8 @@ const handleDataChannelMessageReceived = (event) =>{
         console.log('Incoming string message: ' + event.data);
         textarea = document.getElementById("text")
         textarea.value = textarea.value + '\n' + event.data
-        send_channel.send("Hi! (from browser)");
+        send_channel.send("PONG " + pong.toString());
+        pong++;
     }
 //    } else {
 //        console.log('Incoming data message');
@@ -403,6 +407,8 @@ const handleDataChannelError = (error) =>{
 
 const handleDataChannelClose = (event) =>{
     console.log("dataChannel.OnClose", event);
+    textarea.value = "";
+    pong = 0;
 };
 
 function onDataChannel(event) {
@@ -429,6 +435,8 @@ function createCall(msg) {
     peer_connection.ondatachannel = onDataChannel;
     peer_connection.ontrack = onRemoteTrack;
     peer_connection.onnegotiationneeded = async () => {
+      console.log("onnegotiationneeded");
+//        ws_conn.send("OFFER_REQUEST");
       try {
         makingOffer = true;
         const offer = await peer_connection.createOffer();

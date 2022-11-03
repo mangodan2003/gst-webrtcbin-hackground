@@ -2,9 +2,34 @@
  * Demo gstreamer app for negotiating and streaming a sendrecv webrtc stream
  * with a browser JS app.
  *
- * Build by running: `make webrtc-sendrecv`, or build the gstreamer monorepo.
+ * Build by running:
+ *   `cd webrtc/sendrecv/gst/webrtc-sendrecv`
+ *   `make webrtc-sendrecv`.
+ *   or with meson
+ *   `meson _builddir`
+     `ninja -C _builddir`
  *
- * Author: Nirbheek Chauhan <nirbheek@centricular.com>
+ * Usage:
+ * Start the signalling server :
+ *   `webrtc/signalling`
+ *   `python3 simple_server.py`
+ *
+ * Serve the webapp :
+ *   `cd webrtc/sendrecv/js`
+ *   `http-server -c`
+ *
+ * Visit 127.0.0.1:8080 in browser
+ *
+ * Start the server:
+ *   `cd webrtc/sendrecv/gst/webrtc-sendrecv`
+ *   `./webrtc-sendrecv`
+ *   or if built using meson
+ *   `./_builddir/webrtc/sendrecv/gst/webrtc-sendrecv`
+ *
+ * Toggle streams on and off using the Browser UI
+ *
+ * Author: Dan Squires <mangodan2003@gmail.com>, Nirbheek Chauhan <nirbheek@centricular.com>
+ *
  */
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
@@ -57,24 +82,19 @@ static GstPad *video_sink = NULL, *audio_sink = NULL;
 
 static SoupWebsocketConnection *ws_conn = NULL;
 static enum AppState app_state = 0;
-static gchar *peer_id = NULL;
+static gchar *peer_id = "test";
 static gchar *our_id = NULL;
 // Changed this so that it defaults to localhost as requires changes to the js
 static const gchar *server_url = "wss://127.0.0.1:8443";
 static gboolean disable_ssl = FALSE;
-static gboolean remote_is_offerer = FALSE;
 static gboolean making_offer = FALSE;
 
+static unsigned int ping_count = 0;
+
 static GOptionEntry entries[] = {
-  {"peer-id", 0, 0, G_OPTION_ARG_STRING, &peer_id,
-      "String ID of the peer to connect to", "ID"},
-  {"our-id", 0, 0, G_OPTION_ARG_STRING, &our_id,
-      "String ID that the peer can use to connect to us", "ID"},
   {"server", 0, 0, G_OPTION_ARG_STRING, &server_url,
       "Signalling server to connect to", "URL"},
   {"disable-ssl", 0, 0, G_OPTION_ARG_NONE, &disable_ssl, "Disable ssl", NULL},
-  {"remote-offerer", 0, 0, G_OPTION_ARG_NONE, &remote_is_offerer,
-      "Request that the peer generate the offer and we'll answer", NULL},
   {NULL},
 };
 
@@ -307,17 +327,21 @@ on_offer_created (GstPromise * promise, gpointer user_data)
   making_offer = FALSE;
 }
 
-static void
-on_negotiation_needed (GstElement * element, gpointer user_data)
-{
-  gst_print ("on_negotiation_needed()\n");
+static void create_offer() {
   app_state = PEER_CALL_NEGOTIATING;
 
   making_offer = TRUE;
 
   GstPromise *promise = gst_promise_new_with_change_func (on_offer_created, NULL, NULL);
   g_signal_emit_by_name (webrtc1, "create-offer", NULL, promise);
+}
 
+static void
+on_negotiation_needed (GstElement * element, gpointer user_data)
+{
+  gst_print ("on_negotiation_needed()\n");
+  //soup_websocket_connection_send_text (ws_conn, "OFFER_REQUEST");
+  create_offer();
 }
 
 static void
@@ -329,10 +353,12 @@ data_channel_on_error (GObject * dc, gpointer user_data)
 
 static gboolean data_channel_send_hello(GObject * dc) {
   GBytes *bytes = g_bytes_new ("data", strlen ("data"));
-  gst_print ("Sending hello to browser\n");
-  g_signal_emit_by_name (dc, "send-string", "Hi! from GStreamer");
+  gchar* ping = g_strdup_printf ("PING %i", ping_count++);
+  gst_print ("Sending ping to browser\n");
+  g_signal_emit_by_name (dc, "send-string", ping);
   g_signal_emit_by_name (dc, "send-data", bytes);
   g_bytes_unref (bytes);
+  g_free(ping);
   return G_SOURCE_CONTINUE;
 }
 
@@ -347,6 +373,7 @@ static void
 data_channel_on_open (GObject * dc, gpointer user_data)
 {
   gst_print ("data channel opened\n");
+  ping_count = 0;
   static int done = 0;
   if(done == 0) {
     g_timeout_add (2000, (GSourceFunc) data_channel_send_hello, dc);
@@ -374,6 +401,11 @@ static GstPad* send_media_to_browser(GstElement* bin) {
   // explicitly link pads to get reference to sink
   GstPad* src = gst_element_get_static_pad(bin, "src");
   GstPad* sink = gst_element_request_pad_simple(webrtc1, "sink_%u");
+
+  gchar *sink_name;
+  g_object_get(sink, "name", &sink_name, NULL);
+  gst_print ("send_media_to_browser() new sink named: %s\n", sink_name);
+  g_free(sink_name);
 
   gst_pad_link(src, sink);
 
@@ -629,14 +661,10 @@ webrtcbin_get_stats (GstElement * webrtcbin)
 
 #define STUN_SERVER " stun-server=stun://stun.l.google.com:19302 "
 #define RTP_TWCC_URI "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
-#define RTP_CAPS_OPUS "application/x-rtp,media=audio,encoding-name=OPUS"
-#define RTP_OPUS_DEFAULT_PT 97
-#define RTP_CAPS_VP8 "application/x-rtp,media=video,encoding-name=VP8"
-#define RTP_VP8_DEFAULT_PT 96
-
+#define RTP_PAYLOAD_TYPE "96"
 
 static gboolean
-start_pipeline (gboolean create_offer, guint opus_pt, guint vp8_pt)
+start_pipeline ()
 {
 //  char *pipeline;
   GstStateChangeReturn ret;
@@ -649,43 +677,17 @@ start_pipeline (gboolean create_offer, guint opus_pt, guint vp8_pt)
   webrtc1 = gst_element_factory_make("webrtcbin", NULL);
   g_assert_nonnull (webrtc1);
 
+  //g_object_set(webrtc1, "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_COMPAT, NULL);
   g_object_set(webrtc1, "bundle-policy", GST_WEBRTC_BUNDLE_POLICY_MAX_BUNDLE, NULL);
   g_object_set(webrtc1, "stun-server", STUN_SERVER, NULL, "name", "sendrecv", NULL);
 
   gst_bin_add(GST_BIN(pipe1), webrtc1);
-//  if (!create_offer) {
-//    /* XXX: this will fail when the remote offers twcc as the extension id
-//     * cannot currently be negotiated when receiving an offer.
-//     */
-//    GST_FIXME ("Need to implement header extension negotiation when "
-//        "reciving a remote offers");
-//  } else {
-//    GstElement *videopay, *audiopay;
-//    GstRTPHeaderExtension *video_twcc, *audio_twcc;
-//
-//    videopay = gst_bin_get_by_name (GST_BIN (pipe1), "videopay");
-//    g_assert_nonnull (videopay);
-//    video_twcc = gst_rtp_header_extension_create_from_uri (RTP_TWCC_URI);
-//    g_assert_nonnull (video_twcc);
-//    gst_rtp_header_extension_set_id (video_twcc, 1);
-//    g_signal_emit_by_name (videopay, "add-extension", video_twcc);
-//    g_clear_object (&video_twcc);
-//    g_clear_object (&videopay);
-//
-//    audiopay = gst_bin_get_by_name (GST_BIN (pipe1), "audiopay");
-//    g_assert_nonnull (audiopay);
-//    audio_twcc = gst_rtp_header_extension_create_from_uri (RTP_TWCC_URI);
-//    g_assert_nonnull (audio_twcc);
-//    gst_rtp_header_extension_set_id (audio_twcc, 1);
-//    g_signal_emit_by_name (audiopay, "add-extension", audio_twcc);
-//    g_clear_object (&audio_twcc);
-//    g_clear_object (&audiopay);
-//  }
+
 
   /* This is the gstwebrtc entry point where we create the offer and so on. It
    * will be called when the pipeline goes to PLAYING. */
   g_signal_connect (webrtc1, "on-negotiation-needed",
-      G_CALLBACK (on_negotiation_needed), GINT_TO_POINTER (create_offer));
+      G_CALLBACK (on_negotiation_needed), NULL);
   /* We need to transmit this ICE candidate to the browser via the websockets
    * signalling server. Incoming ice candidates from the browser need to be
    * added by us too, see on_server_message() */
@@ -710,6 +712,20 @@ start_pipeline (gboolean create_offer, guint opus_pt, guint vp8_pt)
   /* Incoming streams will be exposed via this signal */
   g_signal_connect (webrtc1, "pad-added", G_CALLBACK (on_incoming_stream),
       pipe1);
+
+
+  GstCaps *video_caps =
+      gst_caps_from_string
+      ("application/x-rtp,media=video,encoding-name=H264,payload="
+      RTP_PAYLOAD_TYPE
+      ",clock-rate=90000,packetization-mode=(string)1, profile-level-id=(string)42c016");
+  GstWebRTCRTPTransceiver *trans;
+  g_signal_emit_by_name (webrtc1, "add-transceiver",
+      GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, video_caps, &trans);
+  gst_caps_unref (video_caps);
+  gst_object_unref (trans);
+
+
 
   /* Lifetime is the same as the pipeline itself */
   gst_object_unref (webrtc1);
@@ -802,8 +818,7 @@ on_answer_created (GstPromise * promise, gpointer user_data)
 
   g_assert_cmphex (gst_promise_wait (promise), ==, GST_PROMISE_RESULT_REPLIED);
   reply = gst_promise_get_reply (promise);
-  gst_structure_get (reply, "answer",
-      GST_TYPE_WEBRTC_SESSION_DESCRIPTION, &answer, NULL);
+  gst_structure_get (reply, "answer", GST_TYPE_WEBRTC_SESSION_DESCRIPTION, &answer, NULL);
   gst_promise_unref (promise);
 
   promise = gst_promise_new ();
@@ -830,48 +845,11 @@ on_offer_received (GstSDPMessage * sdp)
   GstWebRTCSessionDescription *offer = NULL;
   GstPromise *promise;
 
-  /* If we got an offer and we have no webrtcbin, we need to parse the SDP,
-   * get the payload types, then start the pipeline */
-  if (!webrtc1 && our_id) {
-    guint medias_len, formats_len;
-    guint opus_pt = 0, vp8_pt = 0;
-
-    gst_println ("Parsing offer to find payload types");
-
-    medias_len = gst_sdp_message_medias_len (sdp);
-    for (int i = 0; i < medias_len; i++) {
-      const GstSDPMedia *media = gst_sdp_message_get_media (sdp, i);
-      formats_len = gst_sdp_media_formats_len (media);
-      for (int j = 0; j < formats_len; j++) {
-        guint pt;
-        GstCaps *caps;
-        GstStructure *s;
-        const char *fmt, *encoding_name;
-
-        fmt = gst_sdp_media_get_format (media, j);
-        if (g_strcmp0 (fmt, "webrtc-datachannel") == 0)
-          continue;
-        pt = atoi (fmt);
-        caps = gst_sdp_media_get_caps_from_media (media, pt);
-        s = gst_caps_get_structure (caps, 0);
-        encoding_name = gst_structure_get_string (s, "encoding-name");
-        if (vp8_pt == 0 && g_strcmp0 (encoding_name, "VP8") == 0)
-          vp8_pt = pt;
-        if (opus_pt == 0 && g_strcmp0 (encoding_name, "OPUS") == 0)
-          opus_pt = pt;
-      }
-    }
-
-    g_assert_cmpint (opus_pt, !=, 0);
-    g_assert_cmpint (vp8_pt, !=, 0);
-
-    gst_println ("Starting pipeline with opus pt: %u vp8 pt: %u", opus_pt,
-        vp8_pt);
-
-    if (!start_pipeline (FALSE, opus_pt, vp8_pt)) {
-      cleanup_and_quit_loop ("ERROR: failed to start pipeline",
-          PEER_CALL_ERROR);
-    }
+  GstWebRTCSignalingState signalling_state;
+  g_object_get(webrtc1, "signaling-state", &signalling_state, NULL);
+  if(signalling_state != GST_WEBRTC_SIGNALING_STATE_STABLE) {
+    gst_println ("on_offer_received() not in stable state. state: %d", signalling_state);
+    return;
   }
 
   offer = gst_webrtc_session_description_new (GST_WEBRTC_SDP_TYPE_OFFER, sdp);
@@ -936,19 +914,22 @@ on_server_message (SoupWebsocketConnection * conn, SoupWebsocketDataType type,
 
     app_state = PEER_CONNECTED;
     /* Start negotiation (exchange SDP and ICE candidates) */
-    if (!start_pipeline (TRUE, RTP_OPUS_DEFAULT_PT, RTP_VP8_DEFAULT_PT))
+    if (!start_pipeline ())
       cleanup_and_quit_loop ("ERROR: failed to start pipeline",
           PEER_CALL_ERROR);
   } else if (g_strcmp0 (text, "OFFER_REQUEST") == 0) {
-    if (app_state != SERVER_REGISTERED) {
-      gst_printerr ("Received OFFER_REQUEST at a strange time, ignoring\n");
-      goto out;
-    }
+   // if (app_state != SERVER_REGISTERED) {
+   //   gst_printerr ("Received OFFER_REQUEST at a strange time, ignoring\n");
+   //  goto out;
+   // }
     gst_print ("Received OFFER_REQUEST, sending offer\n");
     /* Peer wants us to start negotiation (exchange SDP and ICE candidates) */
-    if (!start_pipeline (TRUE, RTP_OPUS_DEFAULT_PT, RTP_VP8_DEFAULT_PT))
-      cleanup_and_quit_loop ("ERROR: failed to start pipeline",
-          PEER_CALL_ERROR);
+    //if (!start_pipeline ())
+    //  cleanup_and_quit_loop ("ERROR: failed to start pipeline",
+    //      PEER_CALL_ERROR);
+    g_idle_add((GSourceFunc) create_offer, NULL);
+
+
   } else if (g_str_has_prefix (text, "ERROR")) {
     /* Handle errors */
     switch (app_state) {
