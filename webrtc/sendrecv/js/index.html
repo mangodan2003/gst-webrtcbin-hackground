@@ -38,9 +38,10 @@
 
     <div>Our id is <b id="peer-id">unknown</b></div>
     <br/>
-    <div>
-      <div>getUserMedia constraints being used:</div>
-      <div><textarea id="constraints" cols=40 rows=4></textarea></div>
-    </div>
+    <input id="send-video-button" onclick="onSendVideoClicked();" type="button" value="Send Video">
+    <input id="recv-video-button" onclick="onRecvVideoClicked();" type="button" value="Receive Video">
+    <input id="send-audio-button" onclick="onSendAudioClicked();" type="button" value="Send Audio">
+    <input id="recv-audio-button" onclick="onRecvAudioClicked();" type="button" value="Receive Audio">
+    <br/>
   </body>
 </html>

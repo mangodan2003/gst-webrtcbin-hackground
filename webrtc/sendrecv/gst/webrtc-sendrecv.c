@@ -40,20 +40,30 @@ enum AppState
   PEER_CALL_ERROR,
 };
 
+
+
+#define VIDEO_H264_CAPS "video/x-h264, profile=constrained-baseline"
+#define INPUT_CAPS "video/x-raw, width=640, height=480, framerate=25/1"
+#define RTP_VIDEO_H264_CAPS "application/x-rtp,media=video,encoding-name=H264,payload=96"
+#define RTP_AUDIO_OPUS_CAPS "application/x-rtp,media=audio,encoding-name=OPUS,payload=97"
+
 #define GST_CAT_DEFAULT webrtc_sendrecv_debug
 GST_DEBUG_CATEGORY_STATIC (GST_CAT_DEFAULT);
 
 static GMainLoop *loop;
-static GstElement *pipe1, *webrtc1 = NULL;
+static GstElement *pipe1, *webrtc1 = NULL, *video_bin = NULL, *audio_bin = NULL;
 static GObject *send_channel, *receive_channel;
+static GstPad *video_sink = NULL, *audio_sink = NULL;
 
 static SoupWebsocketConnection *ws_conn = NULL;
 static enum AppState app_state = 0;
 static gchar *peer_id = NULL;
 static gchar *our_id = NULL;
-static const gchar *server_url = "wss://webrtc.nirbheek.in:8443";
+// Changed this so that it defaults to localhost as requires changes to the js
+static const gchar *server_url = "wss://127.0.0.1:8443";
 static gboolean disable_ssl = FALSE;
 static gboolean remote_is_offerer = FALSE;
+static gboolean making_offer = FALSE;
 
 static GOptionEntry entries[] = {
   {"peer-id", 0, 0, G_OPTION_ARG_STRING, &peer_id,
@@ -183,6 +193,8 @@ on_incoming_decodebin_stream (GstElement * decodebin, GstPad * pad,
 static void
 on_incoming_stream (GstElement * webrtc, GstPad * pad, GstElement * pipe)
 {
+  gst_println ("on_incoming_stream()");
+
   GstElement *decodebin;
   GstPad *sinkpad;
 
@@ -276,6 +288,14 @@ on_offer_created (GstPromise * promise, gpointer user_data)
       GST_TYPE_WEBRTC_SESSION_DESCRIPTION, &offer, NULL);
   gst_promise_unref (promise);
 
+  GstWebRTCSignalingState signalling_state;
+  g_object_get(webrtc1, "signaling-state", &signalling_state, NULL);
+  if(signalling_state != GST_WEBRTC_SIGNALING_STATE_STABLE) {
+    making_offer = FALSE;
+    return;
+  }
+
+
   promise = gst_promise_new ();
   g_signal_emit_by_name (webrtc1, "set-local-description", offer, promise);
   gst_promise_interrupt (promise);
@@ -284,21 +304,20 @@ on_offer_created (GstPromise * promise, gpointer user_data)
   /* Send offer to peer */
   send_sdp_to_peer (offer);
   gst_webrtc_session_description_free (offer);
+  making_offer = FALSE;
 }
 
 static void
 on_negotiation_needed (GstElement * element, gpointer user_data)
 {
-  gboolean create_offer = GPOINTER_TO_INT (user_data);
+  gst_print ("on_negotiation_needed()\n");
   app_state = PEER_CALL_NEGOTIATING;
 
-  if (remote_is_offerer) {
-    soup_websocket_connection_send_text (ws_conn, "OFFER_REQUEST");
-  } else if (create_offer) {
-    GstPromise *promise =
-        gst_promise_new_with_change_func (on_offer_created, NULL, NULL);
-    g_signal_emit_by_name (webrtc1, "create-offer", NULL, promise);
-  }
+  making_offer = TRUE;
+
+  GstPromise *promise = gst_promise_new_with_change_func (on_offer_created, NULL, NULL);
+  g_signal_emit_by_name (webrtc1, "create-offer", NULL, promise);
+
 }
 
 static void
@@ -328,7 +347,11 @@ static void
 data_channel_on_open (GObject * dc, gpointer user_data)
 {
   gst_print ("data channel opened\n");
-  g_timeout_add (200, (GSourceFunc) data_channel_send_hello, dc);
+  static int done = 0;
+  if(done == 0) {
+    g_timeout_add (2000, (GSourceFunc) data_channel_send_hello, dc);
+    done = 1;
+  }
 }
 
 static void
@@ -337,11 +360,182 @@ data_channel_on_close (GObject * dc, gpointer user_data)
   cleanup_and_quit_loop ("Data channel closed", 0);
 }
 
+void add_ghost_src(GstElement* bin, GstElement* el) {
+  GstPad* src = gst_element_get_static_pad(el, "src");
+  GstPad* ghostSrc = gst_ghost_pad_new("src", src);
+  gst_element_add_pad(bin, ghostSrc);
+  gst_object_unref(src);
+}
+
+static GstPad* send_media_to_browser(GstElement* bin) {
+  gst_element_set_locked_state(bin, TRUE);
+  gst_bin_add(GST_BIN(pipe1), bin);
+
+  // explicitly link pads to get reference to sink
+  GstPad* src = gst_element_get_static_pad(bin, "src");
+  GstPad* sink = gst_element_request_pad_simple(webrtc1, "sink_%u");
+
+  gst_pad_link(src, sink);
+
+  gst_object_unref(src);
+
+  gst_element_set_locked_state(bin, FALSE);
+  gst_element_sync_state_with_parent(bin);
+
+  return sink;
+}
+
+static void stop_media_to_browser(GstElement* element, GstPad *sink) {
+  GstPad *src;
+  GstWebRTCRTPTransceiver* transceiver;
+
+  src = gst_element_get_static_pad(element, "src");
+
+  gst_element_send_event(element, gst_event_new_eos());
+
+  g_object_get(sink, "transceiver", &transceiver, NULL);
+  g_object_set(transceiver, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_INACTIVE, NULL);
+
+  gst_element_set_locked_state(element, TRUE);
+  gst_element_set_state(element, GST_STATE_NULL);
+  gst_pad_unlink(src, sink);
+  gst_element_release_request_pad(webrtc1, sink);
+
+  gst_object_unref(transceiver);
+  gst_object_unref(sink);
+  gst_object_unref(src);
+
+  gst_bin_remove(GST_BIN(pipe1), element);
+}
+
+
+static gboolean send_video_to_browser() {
+  gst_print ("send_video_to_browser()\n");
+
+  GstElement* videotestsrc = gst_element_factory_make("videotestsrc", NULL);
+  g_object_set(videotestsrc, "is-live", 1, "pattern", 18, NULL);
+
+  GstElement* videorate = gst_element_factory_make("videorate", NULL);
+  GstElement* videoscale = gst_element_factory_make("videoscale", NULL);
+  GstElement* videoconvert = gst_element_factory_make("videoconvert", NULL);
+
+  GstElement* queue1 = gst_element_factory_make("queue", NULL);
+  g_object_set(queue1, "max-size-buffers", 1, NULL);
+
+  GstElement* x264enc = gst_element_factory_make("x264enc", NULL);
+  g_object_set(x264enc, "bitrate", 800, NULL);
+  g_object_set(x264enc, "speed-preset", 1 /* ultrafast */, NULL);
+  g_object_set(x264enc, "tune", 4 /* zerolatency */, NULL);
+
+  // chrome seems happy with threads=1 or 2, but not 3+ (freeze on first keyframe)
+  // doesn't seem to affect behaviour, so just 1 thread for safety
+  g_object_set(x264enc, "threads", 1, NULL);
+
+  GstElement* queue2 = gst_element_factory_make("queue", NULL);
+
+  GstElement* h264parse = gst_element_factory_make("h264parse", NULL);
+  GstElement* rtph264pay = gst_element_factory_make("rtph264pay", NULL);
+  g_object_set(rtph264pay, "config-interval", -1, NULL);
+  g_object_set(rtph264pay, "aggregate-mode", 1 /* "zero-latency" */, NULL);
+  guint mtu;
+
+  g_object_set(rtph264pay, "mtu", 1300, NULL);
+  g_object_get(rtph264pay, "mtu", &mtu, NULL);
+
+
+  GstElement* queue3 = gst_element_factory_make("queue", NULL);
+
+  GstCaps* inputCaps = gst_caps_from_string(INPUT_CAPS);
+  GstCaps* encodeCaps = gst_caps_from_string(VIDEO_H264_CAPS);
+
+  GstElement* bin = gst_bin_new("video-to-browser");
+
+  gst_bin_add_many(GST_BIN(bin), videotestsrc, videorate, videoscale, videoconvert, queue1, x264enc, queue2, h264parse,
+                   rtph264pay, queue3, NULL);
+
+  gst_element_link_many(videotestsrc, videorate, videoscale, NULL);
+  gst_element_link_filtered(videoscale, videoconvert, inputCaps);
+  gst_element_link_many(videoconvert, queue1, x264enc, NULL);
+  gst_element_link_filtered(x264enc, queue2, encodeCaps);
+  gst_element_link_many(queue2, h264parse, rtph264pay, NULL);
+
+  GstCaps* caps = gst_caps_from_string(RTP_VIDEO_H264_CAPS);
+  gst_element_link_filtered(rtph264pay, queue3, caps);
+
+  // expose queue3 src pad as the bin src
+  add_ghost_src(bin, queue3);
+
+  video_sink = send_media_to_browser(bin);
+
+  video_bin = bin;
+  return G_SOURCE_REMOVE;
+}
+
+
+static gboolean stop_video_to_browser() {
+  gst_print ("stop_video_to_browser()\n");
+  stop_media_to_browser(video_bin, video_sink);
+  video_sink = NULL;
+  video_bin = NULL;
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean send_audio_to_browser() {
+  gst_print ("send_audio_to_browser()\n");
+
+  GstElement* testaudiosrc = gst_element_factory_make("audiotestsrc", NULL);
+  g_object_set(testaudiosrc, "wave", 10, NULL); // Red noise
+
+  GstElement* opusenc = gst_element_factory_make("opusenc", NULL);
+  GstElement* rtpopuspay = gst_element_factory_make("rtpopuspay", NULL);
+  GstElement* queue = gst_element_factory_make("queue", NULL);
+
+  GstElement* bin = gst_bin_new("audio-to-browser");
+
+  gst_bin_add_many(GST_BIN(bin), testaudiosrc, opusenc, rtpopuspay, queue, NULL);
+  gst_element_link_many(testaudiosrc, opusenc, rtpopuspay, NULL);
+
+  GstCaps* caps = gst_caps_from_string(RTP_AUDIO_OPUS_CAPS);
+  gst_element_link_filtered(rtpopuspay, queue, caps);
+
+  // expose queue3 src pad as the bin src
+  add_ghost_src(bin, queue);
+
+  audio_sink = send_media_to_browser(bin);
+  audio_bin = bin;
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean stop_audio_to_browser() {
+  gst_print ("stop_audio_to_browser()\n");
+  stop_media_to_browser(audio_bin, audio_sink);
+  audio_bin = NULL;
+  audio_sink = NULL;
+  return G_SOURCE_REMOVE;
+}
+
 static void
 data_channel_on_message_string (GObject * dc, gchar * str, gpointer user_data)
 {
   gst_print ("Received data channel message: %s\n", str);
+
+  if(g_strcmp0(str, "RECV VIDEO START") == 0) {
+    // Just calling send_video_to_browser directly from this context doesn't work
+    // so schedule an event to do it for us.
+    g_idle_add((GSourceFunc) send_video_to_browser, NULL);
+  }
+  if(g_strcmp0(str, "RECV VIDEO STOP") == 0) {
+    g_idle_add ((GSourceFunc) stop_video_to_browser, NULL);
+  }
+  if(g_strcmp0(str, "RECV AUDIO START") == 0) {
+    g_idle_add((GSourceFunc) send_audio_to_browser, NULL);
+  }
+  if(g_strcmp0(str, "RECV AUDIO STOP") == 0) {
+    g_idle_add ((GSourceFunc) stop_audio_to_browser, NULL);
+  }
 }
+
+
 
 static void
 connect_data_channel_signals (GObject * data_channel)
@@ -440,6 +634,7 @@ webrtcbin_get_stats (GstElement * webrtcbin)
 #define RTP_CAPS_VP8 "application/x-rtp,media=video,encoding-name=VP8"
 #define RTP_VP8_DEFAULT_PT 96
 
+
 static gboolean
 start_pipeline (gboolean create_offer, guint opus_pt, guint vp8_pt)
 {
@@ -515,6 +710,7 @@ start_pipeline (gboolean create_offer, guint opus_pt, guint vp8_pt)
   /* Incoming streams will be exposed via this signal */
   g_signal_connect (webrtc1, "pad-added", G_CALLBACK (on_incoming_stream),
       pipe1);
+
   /* Lifetime is the same as the pipeline itself */
   gst_object_unref (webrtc1);
 

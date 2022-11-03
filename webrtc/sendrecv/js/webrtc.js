@@ -11,7 +11,7 @@
 var ws_server;
 var ws_port;
 // Set this to use a specific peer id instead of a random one
-var default_peer_id;
+var default_peer_id = "test";
 // Override with your own STUN servers if you want
 var rtc_configuration = {iceServers: [{urls: "stun:stun.services.mozilla.com"},
                                       {urls: "stun:stun.l.google.com:19302"}]};
@@ -20,13 +20,39 @@ var default_constraints = {video: true, audio: true};
 
 var connect_attempts = 0;
 var peer_connection;
+let makingOffer = false, ignoreOffer = false;
+let polite = true;
 var send_channel;
 var ws_conn;
 // Promise for local stream after constraints are approved by the user
 var local_stream_promise;
 
-function setConnectButtonState(value) {
-    document.getElementById("peer-connect-button").value = value;
+function send(json) {
+    ws_conn.send(JSON.stringify(json));
+}
+
+function setButtonState(button, value) {
+    document.getElementById(button).value = value;
+}
+
+function setConnectButtonState(state) {
+    setButtonState("peer-connect-button", state);
+}
+
+function setSendVideoButtonState(state) {
+    setButtonState("send-video-button", state);
+}
+
+function setRecvVideoButtonState(state) {
+    setButtonState("recv-video-button", state);
+}
+
+function setRecvAudioButtonState(state) {
+    setButtonState("recv-audio-button", state);
+}
+
+function setSendAudioButtonState(state) {
+    setButtonState("send-audio-button", state);
 }
 
 function wantRemoteOfferer() {
@@ -46,8 +72,83 @@ function onConnectClicked() {
     }
 
     ws_conn.send("SESSION " + id);
-    setConnectButtonState("Disconnect");
+    setButtonState("peer-connect-button", "Disconnect");
 }
+
+function onSendVideoClicked() {
+    if (document.getElementById("send-video-button").value == "Send Video") {
+        console.log('Send Video clicked.')
+        setSendVideoButtonState("Stop Sending Video");
+
+        local_stream_promise = getLocalMediaStream({video: true, audio: false}).then((stream) => {
+            console.log('Adding local video');
+            for (const track of stream.getTracks()) {
+                peer_connection.addTrack(track);
+                console.log('Added track:', track);
+            }
+        }).catch(setError);
+        return;
+    } else
+    if (document.getElementById("send-video-button").value == "Stop Sending Video") {
+        console.log('Stop Sending Video clicked.')
+        setSendVideoButtonState("Send Video");
+        return;
+    }
+}
+
+function onSendAudioClicked() {
+    if (document.getElementById("send-audio-button").value == "Send Audio") {
+        console.log('Send Audio clicked.')
+        setSendAudioButtonState("Stop Sending Audio");
+
+        local_stream_promise = getLocalMediaStream({video: false, audio: true}).then((stream) => {
+            console.log('Adding local audio');
+            for (const track of stream.getTracks()) {
+                peer_connection.addTrack(track);
+                console.log('Added track:', track);
+            }
+        }).catch(setError);
+        return;
+    } else
+    if (document.getElementById("send-audio-button").value == "Stop Sending Audio") {
+        console.log('Stop Sending Audio clicked.')
+        setSendAudioButtonState("Send Audio");
+        return;
+    }
+}
+
+function onRecvVideoClicked() {
+    console.log("onRecvVideoClicked()");
+    if (document.getElementById("recv-video-button").value == "Receive Video") {
+        console.log('Recv Video clicked.')
+        setRecvVideoButtonState("Stop Receiving Video");
+
+        send_channel.send("RECV VIDEO START");
+    } else
+    if (document.getElementById("recv-video-button").value == "Stop Receiving Video") {
+        console.log('Stop Receiving Video clicked.')
+        setRecvVideoButtonState("Receive Video");
+        send_channel.send("RECV VIDEO STOP");
+        return;
+    }
+}
+
+function onRecvAudioClicked() {
+    console.log("onRecvAudioClicked()");
+    if (document.getElementById("recv-audio-button").value == "Receive Audio") {
+        console.log('Recv Audio clicked.')
+        setRecvAudioButtonState("Stop Receiving Audio");
+
+        send_channel.send("RECV AUDIO START");
+    } else
+    if (document.getElementById("recv-audio-button").value == "Stop Receiving Audio") {
+        console.log('Stop Receiving Audio clicked.')
+        setRecvAudioButtonState("Receive Audio");
+        send_channel.send("RECV AUDIO STOP");
+        return;
+    }
+}
+
 
 function getOurId() {
     return Math.floor(Math.random() * (9000 - 10) + 10).toString();
@@ -99,18 +200,26 @@ function resetVideo() {
 }
 
 // SDP offer received from peer, set remote description and create an answer
-function onIncomingSDP(sdp) {
-    peer_connection.setRemoteDescription(sdp).then(() => {
-        setStatus("Remote SDP set");
-        if (sdp.type != "offer")
-            return;
-        setStatus("Got SDP offer");
-        local_stream_promise.then((stream) => {
-            setStatus("Got local stream, creating answer");
-            peer_connection.createAnswer()
-            .then(onLocalDescription).catch(setError);
-        }).catch(setError);
-    }).catch(setError);
+async function onIncomingSDP(sdp) {
+    const offerCollision = sdp.type == "offer" &&
+                            (makingOffer || peer_connection.signalingState != "stable");
+
+    ignoreOffer = !polite && offerCollision;
+    if (ignoreOffer) {
+        return;
+    }
+    if (offerCollision) {
+    await Promise.all([
+        peer_connection.setLocalDescription({type: "rollback"}),
+        peer_connection.setRemoteDescription(sdp)
+    ]);
+    } else {
+        await peer_connection.setRemoteDescription(sdp);
+    }
+    if (sdp.type == "offer") {
+        await peer_connection.setLocalDescription(await peer_connection.createAnswer());
+        send({sdp: peer_connection.localDescription});
+    }
 }
 
 // Local description was set, send it to peer
@@ -204,17 +313,7 @@ function onServerError(event) {
     window.setTimeout(websocketServerConnect, 3000);
 }
 
-function getLocalStream() {
-    var constraints;
-    var textarea = document.getElementById('constraints');
-    try {
-        constraints = JSON.parse(textarea.value);
-    } catch (e) {
-        console.error(e);
-        setError('ERROR parsing constraints: ' + e.message + ', using default constraints');
-        constraints = default_constraints;
-    }
-    console.log(JSON.stringify(constraints));
+function getLocalMediaStream(constraints) {
 
     // Add local stream
     if (navigator.mediaDevices.getUserMedia) {
@@ -234,10 +333,7 @@ function websocketServerConnect() {
     var span = document.getElementById("status");
     span.classList.remove('error');
     span.textContent = '';
-    // Populate constraints
-    var textarea = document.getElementById('constraints');
-    if (textarea.value == '')
-        textarea.value = JSON.stringify(default_constraints);
+
     // Fetch the peer id to use
     peer_id = default_peer_id || getOurId();
     ws_port = ws_port || '8443';
@@ -264,9 +360,19 @@ function websocketServerConnect() {
 }
 
 function onRemoteTrack(event) {
-    if (getVideoElement().srcObject !== event.streams[0]) {
+    console.log("onRemoteTrack:", event);
+    let stream = event.streams[0];
+    if (getVideoElement().srcObject !== stream) {
         console.log('Incoming stream');
-        getVideoElement().srcObject = event.streams[0];
+        getVideoElement().srcObject = stream;
+        
+        stream.onremovetrack = ({track}) => {
+          console.log(`${track.kind} track was removed.`);
+          if (!stream.getTracks().length) {
+            console.log(`stream ${stream.id} emptied (effectively removed).`);
+            getVideoElement().srcObject = null;
+          }
+        }
     }
 }
 
@@ -279,17 +385,16 @@ const handleDataChannelOpen = (event) =>{
 };
 
 const handleDataChannelMessageReceived = (event) =>{
-    console.log("dataChannel.OnMessage:", event, event.data.type);
-
-    setStatus("Received data channel message");
+    //setStatus("Received data channel message");
     if (typeof event.data === 'string' || event.data instanceof String) {
         console.log('Incoming string message: ' + event.data);
         textarea = document.getElementById("text")
         textarea.value = textarea.value + '\n' + event.data
-    } else {
-        console.log('Incoming data message');
+        send_channel.send("Hi! (from browser)");
     }
-    send_channel.send("Hi! (from browser)");
+//    } else {
+//        console.log('Incoming data message');
+//    }
 };
 
 const handleDataChannelError = (error) =>{
@@ -323,12 +428,20 @@ function createCall(msg) {
     send_channel.onclose = handleDataChannelClose;
     peer_connection.ondatachannel = onDataChannel;
     peer_connection.ontrack = onRemoteTrack;
+    peer_connection.onnegotiationneeded = async () => {
+      try {
+        makingOffer = true;
+        const offer = await peer_connection.createOffer();
+        if (peer_connection.signalingState != "stable") return;
+        await peer_connection.setLocalDescription(offer);
+        send({sdp: peer_connection.localDescription});
+      } catch (e) {
+        log(`ONN ${e}`);
+      } finally {
+        makingOffer = false;
+      }
+    };
     /* Send our video/audio to the other peer */
-    local_stream_promise = getLocalStream().then((stream) => {
-        console.log('Adding local stream');
-        peer_connection.addStream(stream);
-        return stream;
-    }).catch(setError);
 
     if (msg != null && !msg.sdp) {
         console.log("WARNING: First message wasn't an SDP message!?");
@@ -350,3 +463,4 @@ function createCall(msg) {
     setConnectButtonState("Disconnect");
     return local_stream_promise;
 }
+
