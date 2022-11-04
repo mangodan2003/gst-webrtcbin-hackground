@@ -77,7 +77,6 @@ GST_DEBUG_CATEGORY_STATIC (GST_CAT_DEFAULT);
 
 static GMainLoop *loop;
 static GstElement *pipe1, *webrtc1 = NULL, *video_bin = NULL, *audio_bin = NULL;
-static GObject *send_channel, *receive_channel;
 static GstPad *video_sink = NULL, *audio_sink = NULL;
 
 static SoupWebsocketConnection *ws_conn = NULL;
@@ -97,6 +96,25 @@ static GOptionEntry entries[] = {
   {"disable-ssl", 0, 0, G_OPTION_ARG_NONE, &disable_ssl, "Disable ssl", NULL},
   {NULL},
 };
+
+const char* signaling_state_name(int state) {
+  switch (state) {
+    case GST_WEBRTC_SIGNALING_STATE_STABLE:
+      return "stable";
+    case GST_WEBRTC_SIGNALING_STATE_CLOSED:
+      return "closed";
+    case GST_WEBRTC_SIGNALING_STATE_HAVE_LOCAL_OFFER:
+      return "have-local-offer";
+    case GST_WEBRTC_SIGNALING_STATE_HAVE_REMOTE_OFFER:
+      return "have-remote-offer";
+    case GST_WEBRTC_SIGNALING_STATE_HAVE_LOCAL_PRANSWER:
+      return "have-local-pranswer";
+    case GST_WEBRTC_SIGNALING_STATE_HAVE_REMOTE_PRANSWER:
+      return "have-remote-pranswer";
+    default:
+      return "bogus";
+  }
+}
 
 static gboolean
 cleanup_and_quit_loop (const gchar * msg, enum AppState state)
@@ -230,6 +248,31 @@ on_incoming_stream (GstElement * webrtc, GstPad * pad, GstElement * pipe)
   sinkpad = gst_element_get_static_pad (decodebin, "sink");
   gst_pad_link (pad, sinkpad);
   gst_object_unref (sinkpad);
+}
+
+static void
+on_stream_removed (GstElement * webrtc, GstPad * pad, GstElement * pipe)
+{
+
+  gchar* name;
+  g_object_get(pad, "name", &name, NULL);
+  GstPadDirection direction = gst_pad_get_direction(pad);
+  switch (direction) {
+    case GST_PAD_SRC:
+      gst_println("WEBRTC PAD REMOVED %s (src)", name);
+      break;
+    case GST_PAD_SINK:
+      gst_println("WEBRTC PAD REMOVED %s (sink)", name);
+      break;
+    case GST_PAD_UNKNOWN:
+      // ?
+      gst_println("WEBRTC PAD REMOVED %s (unknown direction)", name);
+      break;
+    default:
+      gst_println("WEBRTC PAD REMOVED %s (undefined condition!)", name);
+      break;
+  }
+  g_free(name);
 }
 
 static void
@@ -588,7 +631,6 @@ on_data_channel (GstElement * webrtc, GObject * data_channel,
 {
   gst_print ("on_data_channel\n");
   connect_data_channel_signals (data_channel);
-  receive_channel = data_channel;
 }
 
 static void
@@ -659,6 +701,66 @@ webrtcbin_get_stats (GstElement * webrtcbin)
 }
 
 
+static void on_local_description_set(GstPromise * promise, gpointer user_data) {
+
+  GstWebRTCSessionDescription *answer = user_data;
+
+  /* Send answer to peer */
+  send_sdp_to_peer (answer);
+  gst_webrtc_session_description_free (answer);
+}
+
+/* Answer created by our pipeline, to be sent to the peer */
+static void
+on_answer_created (GstPromise * promise, gpointer user_data)
+{
+  GstWebRTCSessionDescription *answer = NULL;
+  const GstStructure *reply;
+
+  g_assert_cmphex (app_state, ==, PEER_CALL_NEGOTIATING);
+
+  g_assert_cmphex (gst_promise_wait (promise), ==, GST_PROMISE_RESULT_REPLIED);
+  reply = gst_promise_get_reply (promise);
+  gst_structure_get (reply, "answer", GST_TYPE_WEBRTC_SESSION_DESCRIPTION, &answer, NULL);
+  gst_promise_unref (promise);
+
+  promise = gst_promise_new_with_change_func((GstPromiseChangeFunc)on_local_description_set, answer, NULL);
+  g_signal_emit_by_name (webrtc1, "set-local-description", answer, promise);
+  gst_promise_interrupt (promise);
+  gst_promise_unref (promise);
+
+}
+
+
+static void create_answer() {
+  GstPromise *promise = gst_promise_new_with_change_func (on_answer_created, NULL, NULL);
+  g_signal_emit_by_name (webrtc1, "create-answer", NULL, promise);
+}
+
+static void
+on_signaling_state_changed(GstElement* object, GParamSpec* pspec, gpointer user_data) {
+  int state;
+  g_object_get(webrtc1, "signaling-state", &state, NULL);
+  gst_println("on_signaling_state_changed() SIGNALLING STATE CHANGED to %s", signaling_state_name(state));
+  switch (state) {
+    case GST_WEBRTC_SIGNALING_STATE_STABLE:
+
+
+      break;
+
+    case GST_WEBRTC_SIGNALING_STATE_HAVE_REMOTE_OFFER:
+      create_answer();
+      break;
+
+    case GST_WEBRTC_SIGNALING_STATE_HAVE_LOCAL_OFFER:
+    case GST_WEBRTC_SIGNALING_STATE_HAVE_LOCAL_PRANSWER:
+    case GST_WEBRTC_SIGNALING_STATE_HAVE_REMOTE_PRANSWER:
+    case GST_WEBRTC_SIGNALING_STATE_CLOSED:
+      break;
+  }
+}
+
+
 #define STUN_SERVER " stun-server=stun://stun.l.google.com:19302 "
 #define RTP_TWCC_URI "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
 #define RTP_PAYLOAD_TYPE "96"
@@ -698,33 +800,26 @@ start_pipeline ()
 
   gst_element_set_state (pipe1, GST_STATE_READY);
 
-  g_signal_emit_by_name (webrtc1, "create-data-channel", "channel", NULL,
-      &send_channel);
-  if (send_channel) {
-    gst_print ("Created data channel\n");
-    connect_data_channel_signals (send_channel);
-  } else {
-    gst_print ("Could not create data channel, is usrsctp available?\n");
-  }
-
-  g_signal_connect (webrtc1, "on-data-channel", G_CALLBACK (on_data_channel),
-      NULL);
+  g_signal_connect (webrtc1, "on-data-channel", G_CALLBACK (on_data_channel), NULL);
   /* Incoming streams will be exposed via this signal */
-  g_signal_connect (webrtc1, "pad-added", G_CALLBACK (on_incoming_stream),
-      pipe1);
+  g_signal_connect (webrtc1, "pad-added", G_CALLBACK (on_incoming_stream), pipe1);
+  /* Removed streams via this one */
+  g_signal_connect(webrtc1, "pad-removed", G_CALLBACK(on_stream_removed), pipe1);
 
 
-  GstCaps *video_caps =
-      gst_caps_from_string
-      ("application/x-rtp,media=video,encoding-name=H264,payload="
-      RTP_PAYLOAD_TYPE
-      ",clock-rate=90000,packetization-mode=(string)1, profile-level-id=(string)42c016");
-  GstWebRTCRTPTransceiver *trans;
-  g_signal_emit_by_name (webrtc1, "add-transceiver",
-      GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, video_caps, &trans);
-  gst_caps_unref (video_caps);
-  gst_object_unref (trans);
+//  GstCaps *video_caps =
+//      gst_caps_from_string
+//      ("application/x-rtp,media=video,encoding-name=H264,payload="
+//      RTP_PAYLOAD_TYPE
+//      ",clock-rate=90000,packetization-mode=(string)1, profile-level-id=(string)42c016");
+//  GstWebRTCRTPTransceiver *trans;
+//  g_signal_emit_by_name (webrtc1, "add-transceiver",
+//      GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, video_caps, &trans);
+//  gst_caps_unref (video_caps);
+//  gst_object_unref (trans);
 
+
+  g_signal_connect(webrtc1, "notify::signaling-state", G_CALLBACK(on_signaling_state_changed), NULL);
 
 
   /* Lifetime is the same as the pipeline itself */
@@ -807,36 +902,15 @@ on_server_closed (SoupWebsocketConnection * conn G_GNUC_UNUSED,
   cleanup_and_quit_loop ("Server connection closed", 0);
 }
 
-/* Answer created by our pipeline, to be sent to the peer */
-static void
-on_answer_created (GstPromise * promise, gpointer user_data)
-{
-  GstWebRTCSessionDescription *answer = NULL;
-  const GstStructure *reply;
 
-  g_assert_cmphex (app_state, ==, PEER_CALL_NEGOTIATING);
 
-  g_assert_cmphex (gst_promise_wait (promise), ==, GST_PROMISE_RESULT_REPLIED);
-  reply = gst_promise_get_reply (promise);
-  gst_structure_get (reply, "answer", GST_TYPE_WEBRTC_SESSION_DESCRIPTION, &answer, NULL);
-  gst_promise_unref (promise);
 
-  promise = gst_promise_new ();
-  g_signal_emit_by_name (webrtc1, "set-local-description", answer, promise);
-  gst_promise_interrupt (promise);
-  gst_promise_unref (promise);
-
-  /* Send answer to peer */
-  send_sdp_to_peer (answer);
-  gst_webrtc_session_description_free (answer);
-}
 
 static void
 on_offer_set (GstPromise * promise, gpointer user_data)
 {
   gst_promise_unref (promise);
-  promise = gst_promise_new_with_change_func (on_answer_created, NULL, NULL);
-  g_signal_emit_by_name (webrtc1, "create-answer", NULL, promise);
+  create_answer();
 }
 
 static void
@@ -857,11 +931,14 @@ on_offer_received (GstSDPMessage * sdp)
 
   /* Set remote description on our pipeline */
   {
-    promise = gst_promise_new_with_change_func (on_offer_set, NULL, NULL);
-    g_signal_emit_by_name (webrtc1, "set-remote-description", offer, promise);
+    //promise = gst_promise_new_with_change_func (on_offer_set, NULL, NULL);
+    g_signal_emit_by_name (webrtc1, "set-remote-description", offer, NULL /* promise */);
   }
   gst_webrtc_session_description_free (offer);
 }
+
+
+
 
 /* One mega message handler for our asynchronous calling mechanism */
 static void

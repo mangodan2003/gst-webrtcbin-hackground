@@ -417,6 +417,7 @@ function errorUserMediaHandler() {
 
 const handleDataChannelOpen = (event) =>{
     console.log("dataChannel.OnOpen", event);
+    setButtonsEnabledState(true);
 };
 
 const handleDataChannelMessageReceived = (event) =>{
