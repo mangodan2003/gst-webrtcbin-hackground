@@ -116,6 +116,11 @@ const char* signaling_state_name(int state) {
   }
 }
 
+static gboolean dump_graph() {
+  gst_debug_bin_to_dot_file(GST_BIN(pipe1), GST_DEBUG_GRAPH_SHOW_VERBOSE, "pipeline");
+  return G_SOURCE_REMOVE;
+}
+
 static gboolean
 cleanup_and_quit_loop (const gchar * msg, enum AppState state)
 {
@@ -248,7 +253,12 @@ on_incoming_stream (GstElement * webrtc, GstPad * pad, GstElement * pipe)
   sinkpad = gst_element_get_static_pad (decodebin, "sink");
   gst_pad_link (pad, sinkpad);
   gst_object_unref (sinkpad);
+
+  g_idle_add((GSourceFunc)dump_graph, NULL);
+
 }
+
+
 
 static void
 on_stream_removed (GstElement * webrtc, GstPad * pad, GstElement * pipe)
@@ -422,6 +432,8 @@ data_channel_on_open (GObject * dc, gpointer user_data)
     g_timeout_add (2000, (GSourceFunc) data_channel_send_hello, dc);
     done = 1;
   }
+
+  g_idle_add((GSourceFunc)dump_graph, NULL);
 }
 
 static void
@@ -744,7 +756,6 @@ on_signaling_state_changed(GstElement* object, GParamSpec* pspec, gpointer user_
   gst_println("on_signaling_state_changed() SIGNALLING STATE CHANGED to %s", signaling_state_name(state));
   switch (state) {
     case GST_WEBRTC_SIGNALING_STATE_STABLE:
-
 
       break;
 
