@@ -14,8 +14,6 @@ var default_peer_id = "test";
 // Override with your own STUN servers if you want
 var rtc_configuration = {iceServers: [{urls: "stun:stun.services.mozilla.com"},
                                       {urls: "stun:stun.l.google.com:19302"}]};
-// The default constraints that will be attempted. Can be overriden by the user.
-var default_constraints = {video: true, audio: true};
 
 var connect_attempts = 0;
 var peer_connection;
@@ -24,6 +22,8 @@ let polite = true;
 let pong = 0;
 var send_channel;
 var ws_conn;
+let audioSender = null;
+let videoSender = null;
 // Promise for local stream after constraints are approved by the user
 var local_stream_promise;
 
@@ -75,6 +75,22 @@ function getRecvAudioButtonState() {
     return document.getElementById("recv-audio-button").value == "Receive Audio";
 }
 
+function setButtonsEnabledState(state) {
+  var nodes = document.getElementById("buttons").getElementsByTagName('*');
+  for(var i = 0; i < nodes.length; i++){
+    nodes[i].disabled = !state;
+  }
+}
+
+function resetUI() {
+  pong = 0;
+  document.getElementById("text").value = "";
+  setSendVideoButtonState(false);
+  setSendAudioButtonState(false);
+  setRecvVideoButtonState(false);
+  setRecvAudioButtonState(false);
+  setButtonsEnabledState(false);
+}
 
 function wantRemoteOfferer() {
    return document.getElementById("remote-offerer").checked;
@@ -104,7 +120,7 @@ function onSendVideoClicked() {
         local_stream_promise = getLocalMediaStream({video: true, audio: false}).then((stream) => {
             console.log('Adding local video');
             for (const track of stream.getTracks()) {
-                peer_connection.addTrack(track);
+                videoSender = peer_connection.addTrack(track);
                 console.log('Added track:', track);
             }
         }).catch(setError);
@@ -112,6 +128,10 @@ function onSendVideoClicked() {
     } else {
         console.log('Stop Sending Video clicked.')
         setSendVideoButtonState(false);
+        if(videoSender) {
+            peer_connection.removeTrack(videoSender);
+            videoSender = null;
+        }
     }
 }
 
@@ -123,7 +143,7 @@ function onSendAudioClicked() {
         local_stream_promise = getLocalMediaStream({video: false, audio: true}).then((stream) => {
             console.log('Adding local audio');
             for (const track of stream.getTracks()) {
-                peer_connection.addTrack(track);
+                audioSender = peer_connection.addTrack(track);
                 console.log('Added track:', track);
             }
         }).catch(setError);
@@ -131,6 +151,10 @@ function onSendAudioClicked() {
     } else {
         console.log('Stop Sending Audio clicked.')
         setSendAudioButtonState(false);
+        if(audioSender) {
+            peer_connection.removeTrack(audioSender);
+            audioSender = null;
+        }
     }
 }
 
@@ -340,6 +364,7 @@ function getLocalMediaStream(constraints) {
 }
 
 function websocketServerConnect() {
+    resetUI();
     connect_attempts++;
     if (connect_attempts > 3) {
         setError("Too many connection attempts, aborting. Refresh page to try again");
@@ -419,7 +444,8 @@ const handleDataChannelError = (error) =>{
 };
 
 const handleDataChannelClose = (event) =>{
-    console.log("dataChannel.OnClose", event);
+  console.log("dataChannel.OnClose", event);
+  setButtonsEnabledState(false);
 };
 
 function onDataChannel(event) {
@@ -429,20 +455,16 @@ function onDataChannel(event) {
     receiveChannel.onmessage = handleDataChannelMessageReceived;
     receiveChannel.onerror = handleDataChannelError;
     receiveChannel.onclose = handleDataChannelClose;
+    setButtonsEnabledState(true);
 }
+
+
 
 function createCall(msg) {
     // Reset connection attempts because we connected successfully
     connect_attempts = 0;
     
-    // Reset UI
-    pong = 0;
-    document.getElementById("text").value = "";
-    setSendVideoButtonState(false);
-    setSendAudioButtonState(false);
-    setRecvVideoButtonState(false);
-    setRecvAudioButtonState(false);
-
+    resetUI();
 
     console.log('Creating RTCPeerConnection');
 
@@ -456,7 +478,6 @@ function createCall(msg) {
     peer_connection.ontrack = onRemoteTrack;
     peer_connection.onnegotiationneeded = async () => {
       console.log("onnegotiationneeded");
-//        ws_conn.send("OFFER_REQUEST");
       try {
         makingOffer = true;
         const offer = await peer_connection.createOffer();
