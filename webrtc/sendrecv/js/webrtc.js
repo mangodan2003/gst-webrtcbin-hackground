@@ -40,20 +40,41 @@ function setConnectButtonState(state) {
 }
 
 function setSendVideoButtonState(state) {
-    setButtonState("send-video-button", state);
+    var stateStr = state ? "Stop Sending Video" : "Send Video";
+    setButtonState("send-video-button", stateStr);
 }
 
 function setRecvVideoButtonState(state) {
-    setButtonState("recv-video-button", state);
+    var stateStr = state ? "Stop Receiving Video" : "Receive Video";
+    setButtonState("recv-video-button", stateStr);
 }
 
 function setRecvAudioButtonState(state) {
-    setButtonState("recv-audio-button", state);
+    var stateStr = state ? "Stop Receiving Audio" : "Receive Audio";
+    setButtonState("recv-audio-button", stateStr);
 }
 
 function setSendAudioButtonState(state) {
-    setButtonState("send-audio-button", state);
+    var stateStr = state ? "Stop Sending Audio" : "Send Audio";
+    setButtonState("send-audio-button", stateStr);
 }
+
+function getSendVideoButtonState() {
+    return document.getElementById("send-video-button").value == "Send Video";
+}
+
+function getSendAudioButtonState() {
+    return document.getElementById("send-audio-button").value == "Send Audio";
+}
+
+function getRecvVideoButtonState() {
+    return document.getElementById("recv-video-button").value == "Receive Video";
+}
+
+function getRecvAudioButtonState() {
+    return document.getElementById("recv-audio-button").value == "Receive Audio";
+}
+
 
 function wantRemoteOfferer() {
    return document.getElementById("remote-offerer").checked;
@@ -76,9 +97,9 @@ function onConnectClicked() {
 }
 
 function onSendVideoClicked() {
-    if (document.getElementById("send-video-button").value == "Send Video") {
+    if (getSendVideoButtonState()) {
         console.log('Send Video clicked.')
-        setSendVideoButtonState("Stop Sending Video");
+        setSendVideoButtonState(true);
 
         local_stream_promise = getLocalMediaStream({video: true, audio: false}).then((stream) => {
             console.log('Adding local video');
@@ -88,18 +109,16 @@ function onSendVideoClicked() {
             }
         }).catch(setError);
         return;
-    } else
-    if (document.getElementById("send-video-button").value == "Stop Sending Video") {
+    } else {
         console.log('Stop Sending Video clicked.')
-        setSendVideoButtonState("Send Video");
-        return;
+        setSendVideoButtonState(false);
     }
 }
 
 function onSendAudioClicked() {
-    if (document.getElementById("send-audio-button").value == "Send Audio") {
+    if (getSendAudioButtonState()) {
         console.log('Send Audio clicked.')
-        setSendAudioButtonState("Stop Sending Audio");
+        setSendAudioButtonState(true);
 
         local_stream_promise = getLocalMediaStream({video: false, audio: true}).then((stream) => {
             console.log('Adding local audio');
@@ -109,43 +128,37 @@ function onSendAudioClicked() {
             }
         }).catch(setError);
         return;
-    } else
-    if (document.getElementById("send-audio-button").value == "Stop Sending Audio") {
+    } else {
         console.log('Stop Sending Audio clicked.')
-        setSendAudioButtonState("Send Audio");
-        return;
+        setSendAudioButtonState(false);
     }
 }
 
 function onRecvVideoClicked() {
     console.log("onRecvVideoClicked()");
-    if (document.getElementById("recv-video-button").value == "Receive Video") {
+    if (getRecvVideoButtonState()) {
         console.log('Recv Video clicked.')
-        setRecvVideoButtonState("Stop Receiving Video");
+        setRecvVideoButtonState(true);
 
         send_channel.send("RECV VIDEO START");
-    } else
-    if (document.getElementById("recv-video-button").value == "Stop Receiving Video") {
+    } else {
         console.log('Stop Receiving Video clicked.')
-        setRecvVideoButtonState("Receive Video");
+        setRecvVideoButtonState(false);
         send_channel.send("RECV VIDEO STOP");
-        return;
     }
 }
 
 function onRecvAudioClicked() {
     console.log("onRecvAudioClicked()");
-    if (document.getElementById("recv-audio-button").value == "Receive Audio") {
+    if (getRecvAudioButtonState()) {
         console.log('Recv Audio clicked.')
-        setRecvAudioButtonState("Stop Receiving Audio");
+        setRecvAudioButtonState(true);
 
         send_channel.send("RECV AUDIO START");
-    } else
-    if (document.getElementById("recv-audio-button").value == "Stop Receiving Audio") {
+    } else {
         console.log('Stop Receiving Audio clicked.')
-        setRecvAudioButtonState("Receive Audio");
+        setRecvAudioButtonState(false);
         send_channel.send("RECV AUDIO STOP");
-        return;
     }
 }
 
@@ -407,8 +420,6 @@ const handleDataChannelError = (error) =>{
 
 const handleDataChannelClose = (event) =>{
     console.log("dataChannel.OnClose", event);
-    textarea.value = "";
-    pong = 0;
 };
 
 function onDataChannel(event) {
@@ -423,6 +434,15 @@ function onDataChannel(event) {
 function createCall(msg) {
     // Reset connection attempts because we connected successfully
     connect_attempts = 0;
+    
+    // Reset UI
+    pong = 0;
+    document.getElementById("text").value = "";
+    setSendVideoButtonState(false);
+    setSendAudioButtonState(false);
+    setRecvVideoButtonState(false);
+    setRecvAudioButtonState(false);
+
 
     console.log('Creating RTCPeerConnection');
 
