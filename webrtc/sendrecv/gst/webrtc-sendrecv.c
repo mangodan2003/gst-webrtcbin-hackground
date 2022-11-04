@@ -254,7 +254,8 @@ on_incoming_stream (GstElement * webrtc, GstPad * pad, GstElement * pipe)
   gst_pad_link (pad, sinkpad);
   gst_object_unref (sinkpad);
 
-  g_idle_add((GSourceFunc)dump_graph, NULL);
+  // Wait 2 seconds to allow rest of pipeline to be setup, then dump graph file
+  g_timeout_add (2000, (GSourceFunc) dump_graph, NULL);
 
 }
 
