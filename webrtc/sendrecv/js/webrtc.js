@@ -234,32 +234,59 @@ function resetVideo() {
 
 // SDP offer received from peer, set remote description and create an answer
 async function onIncomingSDP(sdp) {
-    const offerCollision = sdp.type == "offer" &&
-                            (makingOffer || peer_connection.signalingState != "stable");
 
-    ignoreOffer = !polite && offerCollision;
-    if (ignoreOffer) {
-        return;
+    if(sdp.type == "answer") {
+        console.log("onIncomingSDP() REMOTE ANSWER: ", sdp);
+         if(peer_connection.signalingState == "have-local-offer") {
+            await peer_connection.setRemoteDescription(sdp);
+         } else {
+            console.log("onIncomingSDP() REMOTE ANSWER: ignoring, wrong state");
+         }
     }
-    if (offerCollision) {
-    await Promise.all([
-        peer_connection.setLocalDescription({type: "rollback"}),
-        peer_connection.setRemoteDescription(sdp)
-    ]);
-    } else {
+
+    if(sdp.type == "offer") {
+        console.log("onIncomingSDP() REMOTE OFFER: ", sdp);
+
         await peer_connection.setRemoteDescription(sdp);
+        await peer_connection.setLocalDescription();
+        var answer = {sdp: peer_connection.localDescription};
+        console.log("onIncomingSDP() ANSWER: ", answer);
+        send(answer);
     }
-    if (sdp.type == "offer") {
-        await peer_connection.setLocalDescription(await peer_connection.createAnswer());
-        send({sdp: peer_connection.localDescription});
-    }
+
+
+//     const offerCollision = sdp.type == "offer" &&
+//                             (makingOffer || peer_connection.signalingState != "stable");
+// 
+//     console.log("onIncomingSDP() peer_connection.signalingState: ", peer_connection.signalingState);
+//     ignoreOffer = !polite && offerCollision;
+//     if (ignoreOffer) {
+//         return;
+//     }
+//     if (offerCollision) {
+//       console.log("onIncomingSDP() Rollback local description, set remote description");
+//       await Promise.all([
+//         peer_connection.setLocalDescription({type: "rollback"}),
+//         peer_connection.setRemoteDescription(sdp)
+//       ]);
+//     } else {
+//         console.log("onIncomingSDP() Setting remote description");
+//         await peer_connection.setRemoteDescription(sdp);
+//     }
+//     if (sdp.type == "offer") {
+//         console.log("onIncomingSDP() Creating answer, setting local description");
+//         await peer_connection.setLocalDescription();
+//         var answer = {sdp: peer_connection.localDescription};
+//         console.log("onIncomingSDP() ANSWER: ", answer);
+//         send(answer);
+//     }
 }
 
 // Local description was set, send it to peer
 function onLocalDescription(desc) {
-    console.log("Got local description: " + JSON.stringify(desc));
+    console.log("onLocalDescription() got local description: " + JSON.stringify(desc));
     peer_connection.setLocalDescription(desc).then(function() {
-        setStatus("Sending SDP " + desc.type);
+        setStatus("onLocalDescription() Sending SDP " + desc.type);
         sdp = {'sdp': peer_connection.localDescription}
         ws_conn.send(JSON.stringify(sdp));
     });
@@ -475,13 +502,16 @@ function createCall(msg) {
       console.log("onnegotiationneeded");
       try {
         makingOffer = true;
-        const offer = await peer_connection.createOffer();
         if (peer_connection.signalingState != "stable") return;
-        await peer_connection.setLocalDescription(offer);
-        send({sdp: peer_connection.localDescription});
+        console.log("onnegotiationneeded() Creating offer, setting local description");
+        await peer_connection.setLocalDescription();
+        var localOffer = {sdp: peer_connection.localDescription};
+        console.log("onnegotiationneeded() OFFER: ", localOffer);
+        send(localOffer);
       } catch (e) {
-        log(`ONN ${e}`);
+        console.log(`ONN ${e}`);
       } finally {
+        console.log("onnegotiationneeded() Offer created.");
         makingOffer = false;
       }
     };
