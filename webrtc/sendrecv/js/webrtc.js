@@ -35,10 +35,6 @@ function setButtonState(button, value) {
     document.getElementById(button).value = value;
 }
 
-function setConnectButtonState(state) {
-    setButtonState("peer-connect-button", state);
-}
-
 function setSendVideoButtonState(state) {
     var stateStr = state ? "Stop Sending Video" : "Send Video";
     setButtonState("send-video-button", stateStr);
@@ -390,10 +386,8 @@ function websocketServerConnect() {
     ws_conn = new WebSocket(ws_url);
     /* When connected, immediately register with the server */
     ws_conn.addEventListener('open', (event) => {
-        document.getElementById("peer-id").textContent = peer_id;
         ws_conn.send('HELLO ' + peer_id);
         setStatus("Registering with server");
-        setConnectButtonState("Connect");
     });
     ws_conn.addEventListener('error', onServerError);
     ws_conn.addEventListener('message', onServerMessage);
@@ -509,7 +503,6 @@ function createCall(msg) {
     if (msg != null)
         setStatus("Created peer connection for call, waiting for SDP");
 
-    setConnectButtonState("Disconnect");
     return local_stream_promise;
 }
 
