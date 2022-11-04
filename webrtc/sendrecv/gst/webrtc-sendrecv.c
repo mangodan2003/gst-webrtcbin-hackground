@@ -749,7 +749,7 @@ on_signaling_state_changed(GstElement* object, GParamSpec* pspec, gpointer user_
       break;
 
     case GST_WEBRTC_SIGNALING_STATE_HAVE_REMOTE_OFFER:
-      create_answer();
+      //create_answer();
       break;
 
     case GST_WEBRTC_SIGNALING_STATE_HAVE_LOCAL_OFFER:
@@ -931,8 +931,9 @@ on_offer_received (GstSDPMessage * sdp)
 
   /* Set remote description on our pipeline */
   {
-    //promise = gst_promise_new_with_change_func (on_offer_set, NULL, NULL);
-    g_signal_emit_by_name (webrtc1, "set-remote-description", offer, NULL /* promise */);
+    promise = gst_promise_new_with_change_func (on_offer_set, NULL, NULL);
+    g_signal_emit_by_name (webrtc1, "set-remote-description", offer, promise);
+    //g_signal_emit_by_name (webrtc1, "set-remote-description", offer, NULL);
   }
   gst_webrtc_session_description_free (offer);
 }
