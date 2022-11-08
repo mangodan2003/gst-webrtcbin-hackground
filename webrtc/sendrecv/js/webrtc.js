@@ -24,6 +24,9 @@ var send_channel;
 var ws_conn;
 let audioSender = null;
 let videoSender = null;
+let videoTrack = null;
+let audioTrack = null;
+
 // Promise for local stream after constraints are approved by the user
 var local_stream_promise;
 
@@ -117,6 +120,7 @@ function onSendVideoClicked() {
             console.log('Adding local video');
             for (const track of stream.getTracks()) {
                 videoSender = peer_connection.addTrack(track);
+                videoTrack = track;
                 console.log('Added track:', track);
             }
         }).catch(setError);
@@ -126,7 +130,9 @@ function onSendVideoClicked() {
         setSendVideoButtonState(false);
         if(videoSender) {
             peer_connection.removeTrack(videoSender);
+            videoTrack.stop();
             videoSender = null;
+            videoTrack = null;
         }
     }
 }
@@ -140,6 +146,7 @@ function onSendAudioClicked() {
             console.log('Adding local audio');
             for (const track of stream.getTracks()) {
                 audioSender = peer_connection.addTrack(track);
+                audioTrack = track;
                 console.log('Added track:', track);
             }
         }).catch(setError);
@@ -149,7 +156,9 @@ function onSendAudioClicked() {
         setSendAudioButtonState(false);
         if(audioSender) {
             peer_connection.removeTrack(audioSender);
+            audioTrack.stop();
             audioSender = null;
+            audioTrack = null;
         }
     }
 }
