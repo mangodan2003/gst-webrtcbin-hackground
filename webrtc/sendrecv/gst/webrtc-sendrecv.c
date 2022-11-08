@@ -1271,7 +1271,6 @@ main (int argc, char *argv[])
   }
 
 out:
-  g_free (peer_id);
   g_free (our_id);
 
   return ret_code;
