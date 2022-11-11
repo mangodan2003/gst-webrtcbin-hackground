@@ -246,7 +246,7 @@ on_incoming_stream (GstElement * webrtc, GstPad * pad, GstElement * pipe)
 
   decodebin = gst_element_factory_make ("decodebin", NULL);
   g_signal_connect (decodebin, "pad-added",
-      G_CALLBACK (on_incoming_decodebin_stream), GST_PAD_NAME (pad));
+      G_CALLBACK (on_incoming_decodebin_stream), pipe1);
   gst_bin_add (GST_BIN (pipe), decodebin);
   gst_element_sync_state_with_parent (decodebin);
 
