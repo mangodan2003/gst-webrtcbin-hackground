@@ -236,7 +236,7 @@ on_incoming_decodebin_stream (GstElement * decodebin, GstPad * pad,
 static void
 on_incoming_stream (GstElement * webrtc, GstPad * pad, GstElement * pipe)
 {
-  gst_println ("on_incoming_stream()");
+  gst_println ("on_incoming_stream() pad name: %s\n", GST_PAD_NAME (pad));
 
   GstElement *decodebin;
   GstPad *sinkpad;
@@ -246,7 +246,7 @@ on_incoming_stream (GstElement * webrtc, GstPad * pad, GstElement * pipe)
 
   decodebin = gst_element_factory_make ("decodebin", NULL);
   g_signal_connect (decodebin, "pad-added",
-      G_CALLBACK (on_incoming_decodebin_stream), pipe);
+      G_CALLBACK (on_incoming_decodebin_stream), GST_PAD_NAME (pad));
   gst_bin_add (GST_BIN (pipe), decodebin);
   gst_element_sync_state_with_parent (decodebin);
 
@@ -265,11 +265,12 @@ static void
 on_stream_removed (GstElement * webrtc, GstPad * pad, GstElement * pipe)
 {
 
-  gchar* name;
-  g_object_get(pad, "name", &name, NULL);
+  gchar* name = GST_PAD_NAME (pad);
   GstPadDirection direction = gst_pad_get_direction(pad);
   switch (direction) {
     case GST_PAD_SRC:
+      // ToDo tear down stream handling part of pipeline when browser stops sending
+      // however currently this is not getting called
       gst_println("WEBRTC PAD REMOVED %s (src)", name);
       break;
     case GST_PAD_SINK:
@@ -283,7 +284,6 @@ on_stream_removed (GstElement * webrtc, GstPad * pad, GstElement * pipe)
       gst_println("WEBRTC PAD REMOVED %s (undefined condition!)", name);
       break;
   }
-  g_free(name);
 }
 
 static void
@@ -482,7 +482,16 @@ static void stop_media_to_browser(GstElement* element, GstPad *sink) {
   gst_element_send_event(element, gst_event_new_eos());
 
   g_object_get(sink, "transceiver", &transceiver, NULL);
-  g_object_set(transceiver, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_INACTIVE, NULL);
+
+  GstWebRTCRTPTransceiverDirection dir;
+  g_object_get(transceiver, "direction", &dir, NULL);
+  if(dir == GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV) {
+    gst_print ("stop_media_to_browser() Setting transceiver direction to recvonly\n");
+    g_object_set(transceiver, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, NULL);
+  } else {
+    gst_print ("stop_media_to_browser() Setting transceiver direction to inactive\n");
+    g_object_set(transceiver, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_INACTIVE, NULL);
+  }
 
   gst_element_set_locked_state(element, TRUE);
   gst_element_set_state(element, GST_STATE_NULL);
@@ -773,7 +782,7 @@ on_signaling_state_changed(GstElement* object, GParamSpec* pspec, gpointer user_
 }
 
 
-#define STUN_SERVER " stun-server=stun://stun.l.google.com:19302 "
+#define STUN_SERVER "stun://stun.l.google.com:19302 "
 #define RTP_TWCC_URI "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
 #define RTP_PAYLOAD_TYPE "96"
 
