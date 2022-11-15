@@ -169,7 +169,10 @@ function onRecvVideoClicked() {
         console.log('Recv Video clicked.')
         setRecvVideoButtonState(true);
 
-        send_channel.send("RECV VIDEO START");
+        //Determine video sourc
+        var source = document.getElementById("video-source-select").value;
+
+        send_channel.send("RECV VIDEO START " + source);
     } else {
         console.log('Stop Receiving Video clicked.')
         setRecvVideoButtonState(false);

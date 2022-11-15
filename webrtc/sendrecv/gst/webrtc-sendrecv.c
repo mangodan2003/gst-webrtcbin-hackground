@@ -2,7 +2,17 @@
  * Demo gstreamer app for negotiating and streaming a sendrecv webrtc stream
  * with a browser JS app.
  *
+ * Build gstreamer using the following options:
+ *   `cd /path/to/gstreamer`
+ *   `meson setup --wipe builddir -Dgst-plugins-ugly:x264=enabled -Dgstreamer:tools=enabled -Dugly=enabled -Dgpl=enabled -Dbad=enabled -Dgst-plugins-bad:webrtc=enabled -Dgst-plugins-bad:srtp=enabled -Dgst-plugins-bad:dtls=enabled`
+ *   `ninja -C builddir`
+ *
+ * Enter devenv
+ *   `ninja -C builddir devenv`
+ *
  * Build by running:
+ *   `cd /pat/to/this/repo`
+ *
  *   `cd webrtc/sendrecv/gst/webrtc-sendrecv`
  *   `make webrtc-sendrecv`.
  *   or with meson
@@ -65,7 +75,12 @@ enum AppState
   PEER_CALL_ERROR,
 };
 
-
+enum AppVideoSource
+{
+  VIDEO_SOURCE_INVALID,
+  VIDEO_SOURCE_TEST_PATTERN,
+  VIDEO_SOURCE_LOOPBACK
+};
 
 #define VIDEO_H264_CAPS "video/x-h264, profile=constrained-baseline"
 #define INPUT_CAPS "video/x-raw, width=640, height=480, framerate=25/1"
@@ -96,6 +111,18 @@ static GOptionEntry entries[] = {
   {"disable-ssl", 0, 0, G_OPTION_ARG_NONE, &disable_ssl, "Disable ssl", NULL},
   {NULL},
 };
+
+
+static const char* video_source_to_string(enum AppVideoSource source) {
+  switch(source) {
+  case VIDEO_SOURCE_TEST_PATTERN:
+    return "test pattern";
+  case VIDEO_SOURCE_LOOPBACK:
+    return "loopback";
+  default:
+    return "Invalid";
+  }
+}
 
 const char* signaling_state_name(int state) {
   switch (state) {
@@ -170,39 +197,68 @@ static void
 handle_media_stream (GstPad * pad, GstElement * pipe, const char *convert_name,
     const char *sink_name)
 {
-  GstPad *qpad;
-  GstElement *q, *conv, *resample, *sink;
+  GstPad *qpad, *tee_pad1, *tee_pad2, *q1_pad, *q2_pad;
+  GstElement *q1, *q2, *t, *conv, *resample, *sink1, *sink2;
   GstPadLinkReturn ret;
 
   gst_println ("Trying to handle stream with %s ! %s", convert_name, sink_name);
 
-  q = gst_element_factory_make ("queue", NULL);
-  g_assert_nonnull (q);
+  q1 = gst_element_factory_make ("queue", NULL);
+  g_assert_nonnull (q1);
   conv = gst_element_factory_make (convert_name, NULL);
   g_assert_nonnull (conv);
-  sink = gst_element_factory_make (sink_name, NULL);
-  g_assert_nonnull (sink);
+  sink1 = gst_element_factory_make (sink_name, NULL);
+  g_assert_nonnull (sink1);
 
   if (g_strcmp0 (convert_name, "audioconvert") == 0) {
     /* Might also need to resample, so add it just in case.
      * Will be a no-op if it's not required. */
     resample = gst_element_factory_make ("audioresample", NULL);
     g_assert_nonnull (resample);
-    gst_bin_add_many (GST_BIN (pipe), q, conv, resample, sink, NULL);
-    gst_element_sync_state_with_parent (q);
+    gst_bin_add_many (GST_BIN (pipe), q1, conv, resample, sink1, NULL);
+    gst_element_sync_state_with_parent (q1);
     gst_element_sync_state_with_parent (conv);
     gst_element_sync_state_with_parent (resample);
-    gst_element_sync_state_with_parent (sink);
-    gst_element_link_many (q, conv, resample, sink, NULL);
+    gst_element_sync_state_with_parent (sink1);
+    gst_element_link_many (q1, conv, resample, sink1, NULL);
+    qpad = gst_element_get_static_pad (q1, "sink");
   } else {
-    gst_bin_add_many (GST_BIN (pipe), q, conv, sink, NULL);
-    gst_element_sync_state_with_parent (q);
+    t = gst_element_factory_make ("tee", NULL);
+    g_assert_nonnull (t);
+    q2 = gst_element_factory_make ("queue", NULL);
+    g_object_set(q2, "leaky", 1, NULL);
+    g_assert_nonnull (q2);
+    sink2 = gst_element_factory_make ("shmsink", NULL);
+    g_assert_nonnull (sink2);
+    g_object_set(sink2, "socket-path", "/tmp/gst-send-recv", "shm-size", 2000000, NULL);
+    gst_bin_add_many (GST_BIN (pipe), t, q1, conv, sink1, q2, sink2, NULL);
+    gst_element_sync_state_with_parent (t);
+    gst_element_sync_state_with_parent (q1);
+    gst_element_sync_state_with_parent (q2);
     gst_element_sync_state_with_parent (conv);
-    gst_element_sync_state_with_parent (sink);
-    gst_element_link_many (q, conv, sink, NULL);
+    gst_element_sync_state_with_parent (sink1);
+    gst_element_sync_state_with_parent (sink2);
+
+    gst_element_link_many (q1, conv, sink1, NULL);
+    gst_element_link_many (q2, sink2, NULL);
+
+    tee_pad1 = gst_element_request_pad_simple (t, "src_%u");
+    g_print ("Obtained request pad %s for autovideosink branch.\n", gst_pad_get_name (tee_pad1));
+    q1_pad = gst_element_get_static_pad(q1, "sink");
+    tee_pad2 = gst_element_request_pad_simple (t, "src_%u");
+    g_print ("Obtained request pad %s for shmsink branch.\n", gst_pad_get_name (tee_pad2));
+    q2_pad = gst_element_get_static_pad(q2, "sink");
+
+    ret = gst_pad_link (tee_pad1, q1_pad);
+    g_assert_cmphex (ret, ==, GST_PAD_LINK_OK);
+    ret = gst_pad_link (tee_pad2, q2_pad);
+    g_assert_cmphex (ret, ==, GST_PAD_LINK_OK);
+
+
+
+    qpad = gst_element_get_static_pad (t, "sink");
   }
 
-  qpad = gst_element_get_static_pad (q, "sink");
 
   ret = gst_pad_link (pad, qpad);
   g_assert_cmphex (ret, ==, GST_PAD_LINK_OK);
@@ -506,11 +562,24 @@ static void stop_media_to_browser(GstElement* element, GstPad *sink) {
 }
 
 
-static gboolean send_video_to_browser() {
-  gst_print ("send_video_to_browser()\n");
+static gboolean send_video_to_browser(enum AppVideoSource source) {
+  gst_print ("send_video_to_browser() source: %s\n", video_source_to_string(source));
 
-  GstElement* videotestsrc = gst_element_factory_make("videotestsrc", NULL);
-  g_object_set(videotestsrc, "is-live", 1, "pattern", 18, NULL);
+  GstElement *videosrc = NULL, *shmsrc=NULL;
+
+  if(source == VIDEO_SOURCE_TEST_PATTERN) {
+    videosrc = gst_element_factory_make("videotestsrc", NULL);
+    g_object_set(videosrc, "pattern", 18, NULL);
+    g_object_set(videosrc, "is-live", 1, NULL);
+  }
+
+  if(source == VIDEO_SOURCE_LOOPBACK) {
+    shmsrc = gst_element_factory_make("shmsrc", NULL);
+    g_object_set(shmsrc, "socket-path", "/tmp/gst-send-recv", "do-timestamp", 1, NULL);
+    videosrc = gst_element_factory_make("videoparse", NULL);
+    g_object_set(videosrc, "width", 640, "height", 480, "format", 2, NULL);
+  }
+
 
   GstElement* videorate = gst_element_factory_make("videorate", NULL);
   GstElement* videoscale = gst_element_factory_make("videoscale", NULL);
@@ -547,10 +616,15 @@ static gboolean send_video_to_browser() {
 
   GstElement* bin = gst_bin_new("video-to-browser");
 
-  gst_bin_add_many(GST_BIN(bin), videotestsrc, videorate, videoscale, videoconvert, queue1, x264enc, queue2, h264parse,
+  gst_bin_add_many(GST_BIN(bin), videosrc, videorate, videoscale, videoconvert, queue1, x264enc, queue2, h264parse,
                    rtph264pay, queue3, NULL);
 
-  gst_element_link_many(videotestsrc, videorate, videoscale, NULL);
+  if(shmsrc) {
+    gst_bin_add(GST_BIN(bin), shmsrc);
+    gst_element_link(shmsrc, videosrc);
+  }
+
+  gst_element_link_many(videosrc, videorate, videoscale, NULL);
   gst_element_link_filtered(videoscale, videoconvert, inputCaps);
   gst_element_link_many(videoconvert, queue1, x264enc, NULL);
   gst_element_link_filtered(x264enc, queue2, encodeCaps);
@@ -616,10 +690,15 @@ data_channel_on_message_string (GObject * dc, gchar * str, gpointer user_data)
 {
   gst_print ("Received data channel message: %s\n", str);
 
-  if(g_strcmp0(str, "RECV VIDEO START") == 0) {
+  if(g_strcmp0(str, "RECV VIDEO START TESTPATTERN") == 0) {
     // Just calling send_video_to_browser directly from this context doesn't work
     // so schedule an event to do it for us.
-    g_idle_add((GSourceFunc) send_video_to_browser, NULL);
+    g_idle_add((GSourceFunc) send_video_to_browser, (void*)VIDEO_SOURCE_TEST_PATTERN);
+  }
+  if(g_strcmp0(str, "RECV VIDEO START LOOPBACK") == 0) {
+    // Just calling send_video_to_browser directly from this context doesn't work
+    // so schedule an event to do it for us.
+    g_idle_add((GSourceFunc) send_video_to_browser, (void*)VIDEO_SOURCE_LOOPBACK);
   }
   if(g_strcmp0(str, "RECV VIDEO STOP") == 0) {
     g_idle_add ((GSourceFunc) stop_video_to_browser, NULL);

@@ -27,6 +27,13 @@
     <br/>
 
     <br/>
+    <div>
+    <label for="video-source-select">Video source:</label>
+      <select name="video-sources" id="video-source-select">
+        <option value="TESTPATTERN">Test Pattern</option>
+        <option value="LOOPBACK">Loopback</option>
+      </select>
+    </div>
     <div id="buttons">
       <input id="send-video-button" onclick="onSendVideoClicked();" type="button" value="Send Video">
       <input id="recv-video-button" onclick="onRecvVideoClicked();" type="button" value="Receive Video">
