@@ -112,6 +112,7 @@ static GOptionEntry entries[] = {
   {NULL},
 };
 
+static guint g_source_data_channel_ping_timeout = 0, g_source_stats_timeout = 0;
 
 static const char* video_source_to_string(enum AppVideoSource source) {
   switch(source) {
@@ -455,45 +456,6 @@ on_negotiation_needed (GstElement * element, gpointer user_data)
 }
 
 static void
-data_channel_on_error (GObject * dc, gpointer user_data)
-{
-  cleanup_and_quit_loop ("Data channel error", 0);
-}
-
-
-static gboolean data_channel_send_hello(GObject * dc) {
-  GBytes *bytes = g_bytes_new ("data", strlen ("data"));
-  gchar* ping = g_strdup_printf ("PING %i", ping_count++);
-  gst_print ("Sending ping to browser\n");
-  g_signal_emit_by_name (dc, "send-string", ping);
-  g_signal_emit_by_name (dc, "send-data", bytes);
-  g_bytes_unref (bytes);
-  g_free(ping);
-  return G_SOURCE_CONTINUE;
-}
-
-
-/*
- * Changed this so that is regularly sends a message such that it is obvious when
- * pipeline has stalled.
- *
- * QUESTION: Why is this called twice?
- */
-static void
-data_channel_on_open (GObject * dc, gpointer user_data)
-{
-  gst_print ("data channel opened\n");
-  ping_count = 0;
-  static int done = 0;
-  if(done == 0) {
-    g_timeout_add (2000, (GSourceFunc) data_channel_send_hello, dc);
-    done = 1;
-  }
-
-  g_idle_add((GSourceFunc)dump_graph, NULL);
-}
-
-static void
 data_channel_on_close (GObject * dc, gpointer user_data)
 {
   cleanup_and_quit_loop ("Data channel closed", 0);
@@ -686,6 +648,43 @@ static gboolean stop_audio_to_browser() {
 }
 
 static void
+data_channel_on_error (GObject * dc, gpointer user_data)
+{
+  cleanup_and_quit_loop ("Data channel error", 0);
+}
+
+
+static gboolean data_channel_send_hello(GObject * dc) {
+  GBytes *bytes = g_bytes_new ("data", strlen ("data"));
+  gchar* ping = g_strdup_printf ("PING %i", ping_count++);
+  gst_print ("Sending ping to browser\n");
+  g_signal_emit_by_name (dc, "send-string", ping);
+  g_signal_emit_by_name (dc, "send-data", bytes);
+  g_bytes_unref (bytes);
+  g_free(ping);
+  return G_SOURCE_CONTINUE;
+}
+
+
+/*
+ * Changed this so that is regularly sends a message such that it is obvious when
+ * pipeline has stalled.
+ *
+ * QUESTION: Why is this called twice?
+ */
+static void
+data_channel_on_open (GObject * dc, gpointer user_data)
+{
+  gst_print ("data channel opened\n");
+  ping_count = 0;
+  if(g_source_data_channel_ping_timeout == 0) { // For some reason on_open gets called twice, this stops us setting up a duplicate timeout
+    g_source_data_channel_ping_timeout = g_timeout_add (2000, (GSourceFunc) data_channel_send_hello, dc);
+  }
+
+  g_idle_add((GSourceFunc)dump_graph, NULL);
+}
+
+static void
 data_channel_on_message_string (GObject * dc, gchar * str, gpointer user_data)
 {
   gst_print ("Received data channel message: %s\n", str);
@@ -782,7 +781,7 @@ on_webrtcbin_get_stats (GstPromise * promise, GstElement * webrtcbin)
   stats = gst_promise_get_reply (promise);
   gst_structure_foreach (stats, on_webrtcbin_stat, NULL);
 
-  g_timeout_add (100, (GSourceFunc) webrtcbin_get_stats, webrtcbin);
+  g_source_stats_timeout = g_timeout_add (100, (GSourceFunc) webrtcbin_get_stats, webrtcbin);
 }
 
 static gboolean
@@ -925,7 +924,7 @@ start_pipeline ()
   /* Lifetime is the same as the pipeline itself */
   gst_object_unref (webrtc1);
 
-  g_timeout_add (100, (GSourceFunc) webrtcbin_get_stats, webrtc1);
+  g_source_stats_timeout = g_timeout_add (100, (GSourceFunc) webrtcbin_get_stats, webrtc1);
 
   gst_print ("Starting pipeline\n");
   ret = gst_element_set_state (GST_ELEMENT (pipe1), GST_STATE_PLAYING);
@@ -1333,14 +1332,23 @@ main (int argc, char *argv[])
     gst_uri_unref (uri);
   }
 
-  loop = g_main_loop_new (NULL, FALSE);
 
-  connect_to_websocket_server_async ();
+  for(;;) {
+    loop = g_main_loop_new (NULL, FALSE);
+    connect_to_websocket_server_async ();
+    g_main_loop_run (loop);
 
-  g_main_loop_run (loop);
-
-  if (loop)
+    // Stop the ping "timeout"
+    g_source_remove(g_source_data_channel_ping_timeout);
+    // Reset this so a new timeout gets added for a new session
+    g_source_data_channel_ping_timeout = 0;
+    // Stop the stats "timeout"
+    g_source_remove(g_source_stats_timeout);
     g_main_loop_unref (loop);
+    gst_element_set_state (GST_ELEMENT (pipe1), GST_STATE_NULL);
+    gst_print ("Pipeline stopped\n");
+  }
+
 
   if (pipe1) {
     gst_element_set_state (GST_ELEMENT (pipe1), GST_STATE_NULL);
@@ -1349,7 +1357,6 @@ main (int argc, char *argv[])
   }
 
 out:
-  g_free (our_id);
 
   return ret_code;
 }
