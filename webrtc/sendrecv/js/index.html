@@ -27,6 +27,9 @@
     <br/>
 
     <br/>
+    <div id="session-buttons">
+      <input id="session-state-button" onclick="onSessionStartStopClicked();" type="button" value="Start Session">
+    </div>
     <div>
     <label for="video-source-select">Video source:</label>
       <select name="video-sources" id="video-source-select">
@@ -34,7 +37,7 @@
         <option value="LOOPBACK">Loopback</option>
       </select>
     </div>
-    <div id="buttons">
+    <div id="media-buttons">
       <input id="send-video-button" onclick="onSendVideoClicked();" type="button" value="Send Video">
       <input id="recv-video-button" onclick="onRecvVideoClicked();" type="button" value="Receive Video">
       <input id="send-audio-button" onclick="onSendAudioClicked();" type="button" value="Send Audio">

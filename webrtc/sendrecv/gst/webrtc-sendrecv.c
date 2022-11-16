@@ -96,8 +96,8 @@ static GstPad *video_sink = NULL, *audio_sink = NULL;
 
 static SoupWebsocketConnection *ws_conn = NULL;
 static enum AppState app_state = 0;
-static gchar *peer_id = "test";
-static gchar *our_id = NULL;
+static gchar *peer_id = NULL; //"test";
+static gchar *our_id = "gst-peer";
 // Changed this so that it defaults to localhost as requires changes to the js
 static const gchar *server_url = "wss://127.0.0.1:8443";
 static gboolean disable_ssl = FALSE;
@@ -1102,10 +1102,10 @@ on_server_message (SoupWebsocketConnection * conn, SoupWebsocketDataType type,
    // }
     gst_print ("Received OFFER_REQUEST, sending offer\n");
     /* Peer wants us to start negotiation (exchange SDP and ICE candidates) */
-    //if (!start_pipeline ())
-    //  cleanup_and_quit_loop ("ERROR: failed to start pipeline",
-    //      PEER_CALL_ERROR);
-    g_idle_add((GSourceFunc) create_offer, NULL);
+    if (!start_pipeline ())
+      cleanup_and_quit_loop ("ERROR: failed to start pipeline",
+          PEER_CALL_ERROR);
+
 
 
   } else if (g_str_has_prefix (text, "ERROR")) {
@@ -1318,16 +1318,6 @@ main (int argc, char *argv[])
       "WebRTC Sending and Receiving example");
 
   if (!check_plugins ()) {
-    goto out;
-  }
-
-  if (!peer_id && !our_id) {
-    gst_printerr ("--peer-id or --our-id is a required argument\n");
-    goto out;
-  }
-
-  if (peer_id && our_id) {
-    gst_printerr ("specify only --peer-id or --our-id\n");
     goto out;
   }
 

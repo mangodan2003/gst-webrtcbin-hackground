@@ -10,7 +10,7 @@
 var ws_server;
 var ws_port;
 // Set this to use a specific peer id instead of a random one
-var default_peer_id = "test";
+var default_peer_id = "browser-peer";
 // Override with your own STUN servers if you want
 var rtc_configuration = {iceServers: [{urls: "stun:stun.services.mozilla.com"},
                                       {urls: "stun:stun.l.google.com:19302"}]};
@@ -38,6 +38,11 @@ function setButtonState(button, value) {
     document.getElementById(button).value = value;
 }
 
+function setSessionButtonState(state) {
+    var stateStr = state ? "Stop Session" : "Start Session";
+    setButtonState("session-state-button", stateStr);
+}
+
 function setSendVideoButtonState(state) {
     var stateStr = state ? "Stop Sending Video" : "Send Video";
     setButtonState("send-video-button", stateStr);
@@ -58,6 +63,10 @@ function setSendAudioButtonState(state) {
     setButtonState("send-audio-button", stateStr);
 }
 
+function getSessionButtonState() {
+    return document.getElementById("session-state-button").value == "Start Session";
+}
+
 function getSendVideoButtonState() {
     return document.getElementById("send-video-button").value == "Send Video";
 }
@@ -74,8 +83,15 @@ function getRecvAudioButtonState() {
     return document.getElementById("recv-audio-button").value == "Receive Audio";
 }
 
-function setButtonsEnabledState(state) {
-  var nodes = document.getElementById("buttons").getElementsByTagName('*');
+function setMediaButtonsEnabledState(state) {
+  var nodes = document.getElementById("media-buttons").getElementsByTagName('*');
+  for(var i = 0; i < nodes.length; i++){
+    nodes[i].disabled = !state;
+  }
+}
+
+function setSessionButtonsEnabledState(state) {
+  var nodes = document.getElementById("session-buttons").getElementsByTagName('*');
   for(var i = 0; i < nodes.length; i++){
     nodes[i].disabled = !state;
   }
@@ -88,28 +104,29 @@ function resetUI() {
   setSendAudioButtonState(false);
   setRecvVideoButtonState(false);
   setRecvAudioButtonState(false);
-  setButtonsEnabledState(false);
+  setMediaButtonsEnabledState(false);
 }
 
 function wantRemoteOfferer() {
    return document.getElementById("remote-offerer").checked;
 }
 
-function onConnectClicked() {
-    if (document.getElementById("peer-connect-button").value == "Disconnect") {
-        resetState();
-        return;
-    }
 
-    var id = document.getElementById("peer-connect").value;
-    if (id == "") {
-        alert("Peer id must be filled out");
-        return;
-    }
 
-    ws_conn.send("SESSION " + id);
-    setButtonState("peer-connect-button", "Disconnect");
+function onSessionStartStopClicked() {
+    if (getSessionButtonState()) {
+        console.log('Start session button clicked.')
+        setSessionButtonState(true);
+
+        ws_conn.send("SESSION gst-peer");
+
+    } else {
+        console.log('Stop session clicked.')
+        ws_conn.close();
+        setSessionButtonState(false);
+    }
 }
+
 
 function onSendVideoClicked() {
     if (getSendVideoButtonState()) {
@@ -318,7 +335,8 @@ function onServerMessage(event) {
     console.log("Received " + event.data);
     switch (event.data) {
         case "HELLO":
-            setStatus("Registered with server, waiting for call");
+            setStatus("Registered with server.");
+            setSessionButtonsEnabledState(true);
             return;
 
         case "SESSION_OK":
@@ -399,6 +417,7 @@ function getLocalMediaStream(constraints) {
 }
 
 function websocketServerConnect() {
+    setSessionButtonsEnabledState(false);
     resetUI();
     connect_attempts++;
     if (connect_attempts > 3) {
@@ -456,7 +475,7 @@ function errorUserMediaHandler() {
 
 const handleDataChannelOpen = (event) =>{
     console.log("dataChannel.OnOpen", event);
-    setButtonsEnabledState(true);
+    setMediaButtonsEnabledState(true);
 };
 
 const handleDataChannelMessageReceived = (event) =>{
@@ -464,7 +483,7 @@ const handleDataChannelMessageReceived = (event) =>{
     if (typeof event.data === 'string' || event.data instanceof String) {
         console.log('Incoming string message: ' + event.data);
         textarea = document.getElementById("text")
-        textarea.value = textarea.value + '\n' + event.data
+        textarea.value =  event.data
         send_channel.send("PONG " + pong.toString());
         pong++;
     }
@@ -479,7 +498,7 @@ const handleDataChannelError = (error) =>{
 
 const handleDataChannelClose = (event) =>{
   console.log("dataChannel.OnClose", event);
-  setButtonsEnabledState(false);
+  setMediaButtonsEnabledState(false);
 };
 
 function onDataChannel(event) {
@@ -489,7 +508,7 @@ function onDataChannel(event) {
     receiveChannel.onmessage = handleDataChannelMessageReceived;
     receiveChannel.onerror = handleDataChannelError;
     receiveChannel.onclose = handleDataChannelClose;
-    setButtonsEnabledState(true);
+    setMediaButtonsEnabledState(true);
 }
 
 
