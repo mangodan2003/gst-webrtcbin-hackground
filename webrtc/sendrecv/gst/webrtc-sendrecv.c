@@ -952,9 +952,6 @@ start_pipeline ()
   g_signal_connect(webrtc1, "notify::signaling-state", G_CALLBACK(on_signaling_state_changed), NULL);
 
 
-  /* Lifetime is the same as the pipeline itself */
-  gst_object_unref (webrtc1);
-
   //g_source_stats_timeout = g_timeout_add (100, (GSourceFunc) webrtcbin_get_stats, webrtc1);
 
   gst_print ("Starting pipeline\n");
