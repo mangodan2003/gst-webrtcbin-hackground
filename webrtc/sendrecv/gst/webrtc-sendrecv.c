@@ -1377,14 +1377,10 @@ main (int argc, char *argv[])
 
     gst_element_set_state (GST_ELEMENT (pipe1), GST_STATE_NULL);
     gst_print ("Pipeline stopped\n");
-  }
-
-
-  if (pipe1) {
-    gst_element_set_state (GST_ELEMENT (pipe1), GST_STATE_NULL);
-    gst_print ("Pipeline stopped\n");
     gst_object_unref (pipe1);
   }
+
+
 
 out:
 
