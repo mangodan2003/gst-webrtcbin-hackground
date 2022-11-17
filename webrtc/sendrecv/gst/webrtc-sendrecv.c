@@ -105,6 +105,8 @@ static gboolean making_offer = FALSE;
 
 static unsigned int ping_count = 0;
 
+static gchar *incoming_audio_pad_name = NULL, *incoming_video_pad_name = NULL;
+
 static GOptionEntry entries[] = {
   {"server", 0, 0, G_OPTION_ARG_STRING, &server_url,
       "Signalling server to connect to", "URL"},
@@ -283,8 +285,11 @@ on_incoming_decodebin_stream (GstElement * decodebin, GstPad * pad,
 
   if (g_str_has_prefix (name, "video")) {
     handle_media_stream (pad, pipe, "videoconvert", "autovideosink");
+    incoming_video_pad_name = GST_PAD_NAME (pad);
+
   } else if (g_str_has_prefix (name, "audio")) {
     handle_media_stream (pad, pipe, "audioconvert", "autoaudiosink");
+    incoming_audio_pad_name = GST_PAD_NAME (pad);
   } else {
     gst_printerr ("Unknown pad %s, ignoring", GST_PAD_NAME (pad));
   }
@@ -300,6 +305,25 @@ on_incoming_stream (GstElement * webrtc, GstPad * pad, GstElement * pipe)
 
   if (GST_PAD_DIRECTION (pad) != GST_PAD_SRC)
     return;
+
+
+
+  GstWebRTCRTPTransceiver* transceiver;
+  g_object_get(pad, "transceiver", &transceiver, NULL);
+
+  GstWebRTCKind kind;
+  g_object_get(transceiver, "kind", &kind, NULL);
+  GstWebRTCRTPTransceiverDirection dir;
+  gst_print ("on_incoming_stream() Transceiver direction: %u\n", dir);
+
+  g_object_get(transceiver, "direction", &dir, NULL);
+  if(dir == GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_INACTIVE) {
+    gst_print ("on_incoming_stream() Setting transceiver direction to recvonly\n");
+    g_object_set(transceiver, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, NULL);
+  }
+
+
+
 
   decodebin = gst_element_factory_make ("decodebin", NULL);
   g_signal_connect (decodebin, "pad-added",
@@ -476,6 +500,7 @@ static GstPad* send_media_to_browser(GstElement* bin) {
   GstPad* src = gst_element_get_static_pad(bin, "src");
   GstPad* sink = gst_element_request_pad_simple(webrtc1, "sink_%u");
 
+
   gchar *sink_name;
   g_object_get(sink, "name", &sink_name, NULL);
   gst_print ("send_media_to_browser() new sink named: %s\n", sink_name);
@@ -501,9 +526,13 @@ static void stop_media_to_browser(GstElement* element, GstPad *sink) {
 
   g_object_get(sink, "transceiver", &transceiver, NULL);
 
-  GstWebRTCRTPTransceiverDirection dir;
-  g_object_get(transceiver, "direction", &dir, NULL);
-  if(dir == GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV) {
+  GstWebRTCKind kind;
+  g_object_get(transceiver, "kind", &kind, NULL);
+  //GstWebRTCRTPTransceiverDirection dir;
+  //g_object_get(transceiver, "direction", &dir, NULL);
+  //if(dir == GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_SENDRECV) {
+  if((incoming_audio_pad_name && kind == GST_WEBRTC_KIND_AUDIO) ||
+      (incoming_video_pad_name && kind == GST_WEBRTC_KIND_VIDEO)) {
     gst_print ("stop_media_to_browser() Setting transceiver direction to recvonly\n");
     g_object_set(transceiver, "direction", GST_WEBRTC_RTP_TRANSCEIVER_DIRECTION_RECVONLY, NULL);
   } else {
@@ -521,6 +550,8 @@ static void stop_media_to_browser(GstElement* element, GstPad *sink) {
   gst_object_unref(src);
 
   gst_bin_remove(GST_BIN(pipe1), element);
+
+
 }
 
 
@@ -860,7 +891,7 @@ on_signaling_state_changed(GstElement* object, GParamSpec* pspec, gpointer user_
 }
 
 
-#define STUN_SERVER "stun://stun.l.google.com:19302 "
+#define STUN_SERVER "stun://stun.l.google.com:19302"
 #define RTP_TWCC_URI "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"
 #define RTP_PAYLOAD_TYPE "96"
 
@@ -924,7 +955,7 @@ start_pipeline ()
   /* Lifetime is the same as the pipeline itself */
   gst_object_unref (webrtc1);
 
-  g_source_stats_timeout = g_timeout_add (100, (GSourceFunc) webrtcbin_get_stats, webrtc1);
+  //g_source_stats_timeout = g_timeout_add (100, (GSourceFunc) webrtcbin_get_stats, webrtc1);
 
   gst_print ("Starting pipeline\n");
   ret = gst_element_set_state (GST_ELEMENT (pipe1), GST_STATE_PLAYING);
@@ -1343,8 +1374,7 @@ main (int argc, char *argv[])
     // Reset this so a new timeout gets added for a new session
     g_source_data_channel_ping_timeout = 0;
     // Stop the stats "timeout"
-    g_source_remove(g_source_stats_timeout);
-    g_main_loop_unref (loop);
+
     gst_element_set_state (GST_ELEMENT (pipe1), GST_STATE_NULL);
     gst_print ("Pipeline stopped\n");
   }
