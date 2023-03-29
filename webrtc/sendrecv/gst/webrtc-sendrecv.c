@@ -34,7 +34,7 @@
  *
  * Start the server:
  *   `cd webrtc/sendrecv/gst/webrtc-sendrecv`
- *   `./webrtc-sendrecv`
+ *   `./webrtc-sendrecv --server=wss://<host where signal server is running>:8443 --disable-ssl`
  *   or if built using meson
  *   `./_builddir/webrtc/sendrecv/gst/webrtc-sendrecv`
  *
