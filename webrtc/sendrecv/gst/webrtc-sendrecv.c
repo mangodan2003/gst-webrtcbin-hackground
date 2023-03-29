@@ -24,6 +24,8 @@
  *   `webrtc/signalling`
  *   `python3 simple_server.py`
  *
+ * Visit https://127.0.0.1:8443/ in browser and accept the certificate
+ *
  * Serve the webapp :
  *   `cd webrtc/sendrecv/js`
  *   `http-server -c`
